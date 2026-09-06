@@ -681,7 +681,8 @@ class GradioChromiumVisibilityTests(unittest.TestCase):
                 text=True,
                 encoding="utf-8",
                 errors="replace",
-                timeout=30,
+                # Windows CIのChrome終了待ちに余裕を持たせる。DOM内の判定は変更しない。
+                timeout=60,
                 check=False,
             )
 

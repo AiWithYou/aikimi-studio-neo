@@ -119,7 +119,8 @@ def cdp_page(chromium: str, url: str):
             page = CdpPage(websocket)
             page.send("Page.enable")
             page.send("Runtime.enable")
-            page.send("Page.navigate", {"url": url})
+            # Windows CIでは新しいChromeプロセスの初回読込が10秒を超える場合がある。
+            page.send("Page.navigate", {"url": url}, timeout=30)
             yield page
         finally:
             close_chromium(
