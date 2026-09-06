@@ -139,6 +139,8 @@ Animaの旧ファイル名はv1用です。新規導入ではv1.1用batまたは
 
 ### WebUIの操作境界
 
+Extras に **Grain Cleaner / 微細な粒状感を抑制** を追加しました（初期状態はオフ）。細部保護付きの原寸処理、自動／見本範囲の推定、処理・保護マスク、診断画像に対応します。操作方法とCLIは [Grain Cleanerガイド](docs/grain-cleaner.md) を参照してください。
+
 Forge由来の`txt2img`、`img2img`、`Extras`、`Settings`は、Forge Neoのタブ構成とQuick Settingsを維持します。Gradioが所有するタブ列は変更せず、その直前へAikimi専用の細い1行を置き、`Krea2`、`Anima`、`SenseNova`、`MiniMax H3`を直接選べるようにしています。カード型ランチャーや別ダッシュボードは追加しません。
 
 - `Krea2`はUI Presetの`krea`を選択するaliasです。現在のForgeタブが`txt2img`または`img2img`ならそのタブを維持し、別のタブから開いた場合は`txt2img`へ移動します。`Krea2 2-Stage Upscale`は自動選択しません。
