@@ -27,6 +27,7 @@ import httpx
 import yaml
 
 from modules.aikimi_security.redaction import sanitized_subprocess_environment
+from modules_forge.minimax_h3_acceleration import FAST_VAE_PACK, SPARSE_COMMIT, H3Acceleration
 
 
 H3_FPS = 24
@@ -230,6 +231,7 @@ class H3Request:
     reference_images: tuple[str, ...] = ()
     reference_videos: tuple[str, ...] = ()
     reference_audios: tuple[str, ...] = ()
+    acceleration: H3Acceleration = field(default_factory=H3Acceleration)
 
     @property
     def dimensions(self) -> tuple[int, int]:
@@ -271,6 +273,8 @@ class RuntimeReadiness:
     server_model_files: dict[str, bool] = field(default_factory=dict)
     missing_nodes: tuple[str, ...] = ()
     error: str | None = None
+    acceleration: H3Acceleration = field(default_factory=H3Acceleration)
+    node_schemas: dict[str, Any] = field(default_factory=dict)
 
     @property
     def ready_for_fl2va(self) -> bool:
@@ -355,6 +359,12 @@ def normalize_file_list(value: Any) -> tuple[str, ...]:
 
 
 def validate_request(request: H3Request) -> None:
+    try:
+        if not isinstance(request.acceleration, H3Acceleration):
+            raise ValueError("H3 高速化設定の形式が不正です。")
+        request.acceleration.validate()
+    except ValueError as exc:
+        raise H3BridgeError(str(exc)) from exc
     if request.mode not in MODES:
         raise H3BridgeError("生成モードを選択してください。")
     if not request.prompt or not request.prompt.strip():
@@ -478,16 +488,17 @@ def resolve_runtime_root(value: str | os.PathLike[str] | None) -> Path:
     return root
 
 
-def model_file_status(runtime_root: Path | None) -> dict[str, bool]:
+def model_file_status(runtime_root: Path | None, acceleration: H3Acceleration | None = None) -> dict[str, bool]:
+    files = (acceleration or H3Acceleration()).model_files(MODEL_FILES)
     if runtime_root is None:
-        return {name: False for name in MODEL_FILES}
+        return {name: False for name in files}
     return {
         name: (runtime_root / "models" / directory / filename).is_file()
-        for name, (directory, filename) in MODEL_FILES.items()
+        for name, (directory, filename) in files.items()
     }
 
 
-def server_model_file_status(nodes: dict[str, Any]) -> dict[str, bool]:
+def server_model_file_status(nodes: dict[str, Any], acceleration: H3Acceleration | None = None) -> dict[str, bool]:
     loader_inputs = {
         "UNETLoader": "unet_name",
         "CLIPLoader": "clip_name",
@@ -500,12 +511,10 @@ def server_model_file_status(nodes: dict[str, Any]) -> dict[str, bool]:
         except (KeyError, IndexError, TypeError):
             values = []
         choices[node_name] = {str(value) for value in values if isinstance(value, str)}
+    loaders = {"diffusion_models": "UNETLoader", "text_encoders": "CLIPLoader", "vae": "VAELoader"}
     return {
-        "FL2VA": H3_FL_MODEL in choices["UNETLoader"],
-        "Ref2VA": H3_REF_MODEL in choices["UNETLoader"],
-        "Qwen3-VL 32B": H3_TEXT_ENCODER in choices["CLIPLoader"],
-        "Video VAE": H3_VIDEO_VAE in choices["VAELoader"],
-        "Audio VAE": H3_AUDIO_VAE in choices["VAELoader"],
+        name: filename in choices[loaders[directory]]
+        for name, (directory, filename) in (acceleration or H3Acceleration()).model_files(MODEL_FILES).items()
     }
 
 
@@ -547,6 +556,7 @@ def _runtime_arguments_are_allowed(arguments: Sequence[str]) -> bool:
         "--preview-method",
         "--reserve-vram",
         "--vram-headroom",
+        "--whitelist-custom-nodes",
     }
     flag_options = {
         "--auto-launch",
@@ -557,6 +567,9 @@ def _runtime_arguments_are_allowed(arguments: Sequence[str]) -> bool:
         "--disable-pinned-memory",
     }
     arguments = tuple(str(argument) for argument in arguments)
+    whitelist = _cli_option_values(arguments, "--whitelist-custom-nodes")
+    if whitelist and whitelist != (FAST_VAE_PACK,):
+        return False
     index = 0
     saw_main = False
     while index < len(arguments):
@@ -654,7 +667,7 @@ def runtime_profile_from_args(
     return None
 
 
-def h3_core_optimization_status(runtime_root: Path) -> tuple[bool, str | None]:
+def h3_core_optimization_status(runtime_root: Path, minimum_commit: str = H3_MINIMUM_COMFY_COMMIT) -> tuple[bool, str | None]:
     creationflags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
     try:
         revision_result = subprocess.run(
@@ -672,7 +685,7 @@ def h3_core_optimization_status(runtime_root: Path) -> tuple[bool, str | None]:
         if not revision:
             return False, None
         ancestor_result = subprocess.run(
-            ["git", "merge-base", "--is-ancestor", H3_MINIMUM_COMFY_COMMIT, revision],
+            ["git", "merge-base", "--is-ancestor", minimum_commit, revision],
             cwd=runtime_root,
             check=False,
             capture_output=True,
@@ -925,8 +938,12 @@ def inspect_readiness(
     runtime_root: Path | None,
     server_url: str = H3_SERVER_URL,
     object_timeout: float = 8.0,
+    acceleration: H3Acceleration | None = None,
 ) -> RuntimeReadiness:
-    files = model_file_status(runtime_root)
+    acceleration = acceleration or H3Acceleration()
+    acceleration.validate()
+    required_nodes = REQUIRED_NODE_TYPES | acceleration.extra_nodes()
+    files = model_file_status(runtime_root, acceleration=acceleration)
     client: ComfyH3Client | None = None
     try:
         client = ComfyH3Client(server_url, timeout=2.0)
@@ -949,10 +966,12 @@ def inspect_readiness(
             raise H3BridgeError(
                 f"最新のMiniMax H3最適化には ComfyUI 0.31.0 以降が必要です（現在 {version or '不明'}）。"
             )
-        nodes = client.object_info(REQUIRED_NODE_TYPES, timeout=object_timeout)
-        missing_nodes = tuple(sorted(REQUIRED_NODE_TYPES - set(nodes)))
-        server_files = server_model_file_status(nodes)
-        h3_core_optimized, core_revision = h3_core_optimization_status(selected_root)
+        nodes = client.object_info(required_nodes, timeout=object_timeout)
+        missing_nodes = tuple(sorted(required_nodes - set(nodes)))
+        server_files = server_model_file_status(nodes, acceleration=acceleration)
+        h3_core_optimized, core_revision = h3_core_optimization_status(
+            selected_root, SPARSE_COMMIT if acceleration.attention != "dense" else H3_MINIMUM_COMFY_COMMIT
+        )
         packages = {
             str(item.get("name")): str(item.get("installed"))
             for item in system.get("comfy_package_versions") or []
@@ -982,6 +1001,8 @@ def inspect_readiness(
             model_files=files,
             server_model_files=server_files,
             missing_nodes=missing_nodes,
+            acceleration=acceleration,
+            node_schemas=nodes,
         )
     except H3BridgeError as exc:
         return RuntimeReadiness(
@@ -990,6 +1011,7 @@ def inspect_readiness(
             connected=False,
             model_files=files,
             error=str(exc),
+            acceleration=acceleration,
         )
     finally:
         if client is not None:
@@ -1014,7 +1036,10 @@ def _runtime_command(
     python: Path,
     port: int,
     runtime_profile: str = RUNTIME_PROFILE_FAST,
+    acceleration: H3Acceleration | None = None,
 ) -> list[str]:
+    acceleration = acceleration or H3Acceleration()
+    acceleration.validate()
     if runtime_profile not in RUNTIME_PROFILES:
         raise H3BridgeError(f"未対応のH3 runtime profileです: {runtime_profile}")
     command = [
@@ -1035,6 +1060,8 @@ def _runtime_command(
         command.extend(["--async-offload", "2"])
     else:
         command.extend(["--cache-none", "--disable-async-offload", "--disable-pinned-memory"])
+    if acceleration.decode_mode == "fast":
+        command.extend(["--whitelist-custom-nodes", FAST_VAE_PACK])
     return command
 
 
@@ -1045,8 +1072,13 @@ def start_runtime(
     runtime_profile: str = RUNTIME_PROFILE_FAST,
     wait_seconds: float = 120.0,
     initial_readiness: RuntimeReadiness | None = None,
+    acceleration: H3Acceleration | None = None,
 ) -> RuntimeReadiness:
     global _MANAGED_PROCESS, _MANAGED_PROCESS_IDENTITY
+    acceleration = acceleration or H3Acceleration()
+    acceleration.validate()
+    if initial_readiness is not None and initial_readiness.acceleration != acceleration:
+        raise H3BridgeError("H3 backendの事前確認と高速化設定が一致しません。状態を再確認してください。")
     runtime_root = resolve_runtime_root(runtime_root)
     normalized_url = normalize_loopback_url(server_url)
     parsed = urllib.parse.urlsplit(normalized_url)
@@ -1056,7 +1088,7 @@ def start_runtime(
     identity = (runtime_root, normalized_url)
 
     if initial_readiness is None:
-        current = inspect_readiness(runtime_root, normalized_url)
+        current = inspect_readiness(runtime_root, normalized_url, acceleration=acceleration)
     else:
         try:
             initial_root = (
@@ -1085,7 +1117,7 @@ def start_runtime(
     stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
     stdout_path = log_directory / f"minimax-h3-{stamp}.stdout.log"
     stderr_path = log_directory / f"minimax-h3-{stamp}.stderr.log"
-    command = _runtime_command(python, port, runtime_profile)
+    command = _runtime_command(python, port, runtime_profile, acceleration=acceleration)
 
     with _PROCESS_LOCK:
         if _MANAGED_PROCESS is not None and _MANAGED_PROCESS.poll() is None:
@@ -1119,7 +1151,7 @@ def start_runtime(
         time.sleep(1.0)
         if not _server_api_responding(normalized_url):
             continue
-        last = inspect_readiness(runtime_root, normalized_url)
+        last = inspect_readiness(runtime_root, normalized_url, acceleration=acceleration)
         if last.connected:
             return last
     raise H3BridgeError(
@@ -1163,6 +1195,7 @@ def _restart_runtime_locked(
     log_directory: Path,
     runtime_profile: str = RUNTIME_PROFILE_FAST,
     wait_seconds: float = 120.0,
+    acceleration: H3Acceleration | None = None,
 ) -> RuntimeReadiness:
     global _MANAGED_PROCESS, _MANAGED_PROCESS_IDENTITY
     runtime_root = resolve_runtime_root(runtime_root)
@@ -1180,6 +1213,7 @@ def _restart_runtime_locked(
             log_directory,
             runtime_profile=runtime_profile,
             wait_seconds=wait_seconds,
+            acceleration=acceleration,
         )
     if not _same_local_path(listening_root, runtime_root):
         raise H3BridgeError(
@@ -1201,6 +1235,7 @@ def _restart_runtime_locked(
             log_directory,
             runtime_profile=runtime_profile,
             wait_seconds=wait_seconds,
+            acceleration=acceleration,
         )
     identity = (runtime_root, normalized_url)
     with _PROCESS_LOCK:
@@ -1253,6 +1288,7 @@ def _restart_runtime_locked(
         log_directory,
         runtime_profile=runtime_profile,
         wait_seconds=wait_seconds,
+        acceleration=acceleration,
     )
 
 
@@ -1262,6 +1298,7 @@ def restart_runtime(
     log_directory: Path,
     runtime_profile: str = RUNTIME_PROFILE_FAST,
     wait_seconds: float = 120.0,
+    acceleration: H3Acceleration | None = None,
 ) -> RuntimeReadiness:
     with _RUNTIME_LIFECYCLE_LOCK:
         readiness = _restart_runtime_locked(
@@ -1270,6 +1307,7 @@ def restart_runtime(
             log_directory,
             runtime_profile=runtime_profile,
             wait_seconds=wait_seconds,
+            acceleration=acceleration,
         )
         return validate_readiness(readiness, runtime_profile)
 
@@ -1278,6 +1316,8 @@ def validate_readiness(
     readiness: RuntimeReadiness,
     runtime_profile: str = RUNTIME_PROFILE_FAST,
 ) -> RuntimeReadiness:
+    acceleration = readiness.acceleration
+    acceleration.validate()
     if runtime_profile not in RUNTIME_PROFILES:
         raise H3BridgeError(f"未対応のH3 runtime profileです: {runtime_profile}")
     if not readiness.connected:
@@ -1287,8 +1327,8 @@ def validate_readiness(
     if not readiness.h3_core_optimized:
         revision = readiness.core_revision[:12] if readiness.core_revision else "未確認"
         raise H3BridgeError(
-            "H3 peak-memory修正を確認できません。"
-            f" ComfyUIを {H3_MINIMUM_COMFY_COMMIT[:12]} 以降へ更新してください（現在 {revision}）。"
+            "選択した設定に必要なH3 core修正を確認できません。"
+            f" ComfyUIを {(SPARSE_COMMIT if acceleration.attention != 'dense' else H3_MINIMUM_COMFY_COMMIT)[:12]} 以降へ更新してください（現在 {revision}）。"
         )
     kitchen = readiness.package_versions.get("comfy-kitchen", "")
     if not readiness.ck_attention_available or _version_tuple(kitchen) < (0, 2, 30):
@@ -1303,16 +1343,30 @@ def validate_readiness(
             f"H3 backendの起動設定が一致しません（選択: {expected} / 接続中: {detected}）。"
             " 実行環境とモデルの「選択設定で再起動」を押してください。"
         )
+    whitelist = _cli_option_values(readiness.runtime_args, "--whitelist-custom-nodes")
+    expected_whitelist = (FAST_VAE_PACK,) if acceleration.decode_mode == "fast" else ()
+    if whitelist != expected_whitelist:
+        raise H3BridgeError(
+            "Fast VAEの拡張許可設定が一致しません。「選択設定で再起動」を押してください。"
+            " 許可するのはComfyUI-MiniMax-H3-MotionCacheだけです。"
+        )
+    if acceleration.attention != "dense" and _version_tuple(kitchen) < (0, 2, 33):
+        raise H3BridgeError("Sparse Attentionにはcomfy-kitchen 0.2.33以上が必要です。ComfyUIのrequirementsを更新してください。")
+    try:
+        acceleration.validate_nodes(readiness.node_schemas)
+    except ValueError as exc:
+        raise H3BridgeError(str(exc)) from exc
     if not readiness.ready_for_fl2va:
         required = ("FL2VA", "Qwen3-VL 32B", "Video VAE", "Audio VAE")
-        missing_local = [name for name in required if not readiness.model_files.get(name)]
-        missing_server = [name for name in required if not readiness.server_model_files.get(name)]
+        selected = acceleration.model_files(MODEL_FILES)
+        missing_local = [f"{name}: models/{selected[name][0]}/{selected[name][1]}" for name in required if not readiness.model_files.get(name)]
+        missing_server = [f"{name}: {selected[name][1]}" for name in required if not readiness.server_model_files.get(name)]
         details = []
         if missing_local:
             details.append("filesystem: " + ", ".join(missing_local))
         if missing_server:
             details.append("接続先のmodel一覧: " + ", ".join(missing_server))
-        raise H3BridgeError("H3 FL2VA の必須モデルが不足しています: " + " / ".join(details))
+        raise H3BridgeError("選択したH3構成のモデルが不足しています: " + " / ".join(details))
     return readiness
 
 
@@ -1321,10 +1375,11 @@ def _ensure_ready_locked(
     server_url: str,
     log_directory: Path,
     runtime_profile: str = RUNTIME_PROFILE_FAST,
+    acceleration: H3Acceleration | None = None,
 ) -> RuntimeReadiness:
     if runtime_profile not in RUNTIME_PROFILES:
         raise H3BridgeError(f"未対応のH3 runtime profileです: {runtime_profile}")
-    readiness = inspect_readiness(runtime_root, server_url)
+    readiness = inspect_readiness(runtime_root, server_url, acceleration=acceleration)
     if not readiness.connected:
         readiness = start_runtime(
             runtime_root,
@@ -1332,6 +1387,7 @@ def _ensure_ready_locked(
             log_directory,
             runtime_profile=runtime_profile,
             initial_readiness=readiness,
+            acceleration=acceleration,
         )
     return validate_readiness(readiness, runtime_profile)
 
@@ -1341,6 +1397,7 @@ def ensure_ready(
     server_url: str,
     log_directory: Path,
     runtime_profile: str = RUNTIME_PROFILE_FAST,
+    acceleration: H3Acceleration | None = None,
 ) -> RuntimeReadiness:
     with _RUNTIME_LIFECYCLE_LOCK:
         return _ensure_ready_locked(
@@ -1348,6 +1405,7 @@ def ensure_ready(
             server_url,
             log_directory,
             runtime_profile=runtime_profile,
+            acceleration=acceleration,
         )
 
 
@@ -1732,6 +1790,7 @@ def build_workflow(request: H3Request, prepared_media: dict[str, Any], seed: int
                 conditioning_inputs["last_frame"] = ["21", 0]
         workflow["5"] = _node("MiniMaxH3ImageToVideo", **conditioning_inputs)
 
+    request.acceleration.apply_workflow(workflow, MODEL_FILES, request.mode)
     return workflow
 
 
@@ -1784,7 +1843,7 @@ def mirror_result(
     staged_video = target.with_name(f".{target.name}.{token}.part")
     staged_metadata = metadata_path.with_name(f".{metadata_path.name}.{token}.part")
     metadata = {
-        "schema_version": 1,
+        "schema_version": 2,
         "model": "MiniMax H3",
         "prompt_id": prompt_id,
         "created_at": datetime.now().astimezone().isoformat(timespec="seconds"),
@@ -1799,7 +1858,12 @@ def mirror_result(
         "seed": seed,
         "scheduler": request.scheduler,
         "ref_image_size": request.ref_image_size,
-        "attention_backend": "comfy-kitchen-int8",
+        "attention_backend": "comfy-kitchen-int8" if request.acceleration.attention == "dense" else f"comfy-kitchen-sparse-{request.acceleration.attention}",
+        "acceleration": request.acceleration.to_dict(),
+        "selected_models": {
+            name: filename for name, (_, filename) in request.acceleration.model_files(MODEL_FILES).items()
+        },
+        "video_decoder": "MiniMaxH3FastVAEDecode" if request.acceleration.decode_mode == "fast" else "VAEDecode",
         "comfyui_version": readiness.comfy_version,
         "comfy_kitchen_version": readiness.package_versions.get("comfy-kitchen"),
         "comfyui_revision": readiness.core_revision,
@@ -1845,6 +1909,8 @@ def _validate_request_runtime_constraints(
 ) -> None:
     if runtime_profile not in RUNTIME_PROFILES:
         raise H3BridgeError(f"未対応のH3 runtime profileです: {runtime_profile}")
+    if readiness.acceleration != request.acceleration:
+        raise H3BridgeError("生成要求と確認済みの高速化構成が一致しません。状態を再確認してください。")
     if request.mode == MODE_REFERENCES and not readiness.ready_for_ref2va:
         raise H3BridgeError("参照モード用 Ref2VA モデルがありません。")
     memory_values = {
@@ -1903,6 +1969,7 @@ def run_generation(
         server_url,
         log_directory,
         runtime_profile=runtime_profile,
+        acceleration=request.acceleration,
     )
     _validate_request_runtime_constraints(request, readiness, runtime_profile)
     cleanup_stale_prepared_media(runtime_root)
@@ -1921,6 +1988,7 @@ def run_generation(
                 server_url,
                 log_directory,
                 runtime_profile=runtime_profile,
+                acceleration=request.acceleration,
             )
             _validate_request_runtime_constraints(request, readiness, runtime_profile)
             client = ComfyH3Client(server_url)
@@ -2213,6 +2281,7 @@ def load_history_request(
             seed=int(metadata["seed"]),
             scheduler=metadata["scheduler"],
             ref_image_size=metadata["ref_image_size"],
+            acceleration=H3Acceleration.from_dict(metadata.get("acceleration")),
         )
     except (TypeError, ValueError, OverflowError) as exc:
         raise H3BridgeError(f"復元用の数値設定が不正です: {exc}") from exc
@@ -2229,6 +2298,7 @@ def load_history_request(
             seed=request.seed,
             scheduler=request.scheduler,
             ref_image_size=request.ref_image_size,
+            acceleration=request.acceleration,
         )
     )
     return request
@@ -2345,6 +2415,13 @@ def readiness_html(
 ) -> str:
     if expected_profile not in RUNTIME_PROFILES:
         expected_profile = RUNTIME_PROFILE_FAST
+    selected_files = readiness.acceleration.model_files(MODEL_FILES)
+    validation_error = None
+    if readiness.connected:
+        try:
+            validate_readiness(readiness, expected_profile)
+        except H3BridgeError as exc:
+            validation_error = str(exc)
     connected_tone = "ready" if readiness.connected else "warn"
     connected_text = "ComfyUI 接続済み" if readiness.connected else "ComfyUI 未接続"
     files_ready = sum(1 for present in readiness.model_files.values() if present)
@@ -2390,14 +2467,14 @@ def readiness_html(
     missing_server_files = [
         name for name in MODEL_FILES if not readiness.server_model_files.get(name)
     ] if readiness.connected else []
-    details = readiness.error or (
+    details = readiness.error or validation_error or (
         "不足ノード: " + ", ".join(readiness.missing_nodes)
         if readiness.missing_nodes
         else "接続先で未検出のmodel: " + ", ".join(missing_server_files)
         if missing_server_files
         else "Comfy Kitchen INT8 attentionを利用できません。runtimeを更新してください。"
         if readiness.connected and not readiness.ck_attention_available
-        else f"H3 coreを {H3_MINIMUM_COMFY_COMMIT[:12]} 以降へ更新してください。"
+        else f"H3 coreを {(SPARSE_COMMIT if readiness.acceleration.attention != 'dense' else H3_MINIMUM_COMFY_COMMIT)[:12]} 以降へ更新してください。"
         if readiness.connected and not readiness.h3_core_optimized
         else (
             "選択した起動profileと接続中の設定が一致しません。"
@@ -2440,6 +2517,7 @@ def readiness_html(
         and readiness.h3_core_optimized
         and profile_matches
         and not memory_low
+        and not validation_error
     )
     if runtime_ready:
         summary_title = "生成できます"
@@ -2477,7 +2555,11 @@ def readiness_html(
         f'<dt>ComfyUI / Kitchen</dt><dd>{html.escape(readiness.comfy_version or "不明")} / {html.escape(kitchen_version or "不明")}</dd>'
         f'<dt>Core revision</dt><dd><code>{html.escape(revision_detail)}</code></dd>'
         f'<dt>Runtime</dt><dd><code title="{html.escape(root, quote=True)}">{html.escape(root)}</code></dd>'
-        '</dl></details>'
+        + "".join(
+            f"<dt>{html.escape(name)}</dt><dd><code>{html.escape(filename)}</code></dd>"
+            for name, (_, filename) in selected_files.items()
+        )
+        + '</dl></details>'
         "</div>"
     )
 

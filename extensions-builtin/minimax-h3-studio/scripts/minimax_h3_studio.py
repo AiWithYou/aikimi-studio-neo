@@ -9,6 +9,8 @@ import gradio as gr
 
 from modules import script_callbacks
 from modules.paths import data_path, script_path
+from modules_forge.minimax_h3_acceleration import H3Acceleration
+from modules_forge.minimax_h3_acceleration_ui import create_acceleration_controls
 from modules_forge.minimax_h3_bridge import (
     H3BridgeError,
     H3GenerationCancelled,
@@ -420,7 +422,8 @@ def _prompt_music_updates(prompt: str, current_validation: str):
     return _prompt_action_updates(prompt, "music", current_validation)
 
 
-def _connect_runtime(runtime_value: str, server_url: str, runtime_profile: str) -> str:
+def _connect_runtime(runtime_value: str, server_url: str, runtime_profile: str, *acceleration_values) -> str:
+    acceleration = H3Acceleration.from_values(acceleration_values)
     try:
         root = resolve_runtime_root(runtime_value)
         readiness = ensure_ready(
@@ -428,13 +431,15 @@ def _connect_runtime(runtime_value: str, server_url: str, runtime_profile: str) 
             server_url,
             LOG_DIRECTORY,
             runtime_profile=runtime_profile,
+            acceleration=acceleration,
         )
         return readiness_html(readiness, runtime_profile)
     except H3BridgeError as exc:
         return _status_error(str(exc))
 
 
-def _restart_runtime(runtime_value: str, server_url: str, runtime_profile: str) -> str:
+def _restart_runtime(runtime_value: str, server_url: str, runtime_profile: str, *acceleration_values) -> str:
+    acceleration = H3Acceleration.from_values(acceleration_values)
     try:
         root = resolve_runtime_root(runtime_value)
         readiness = restart_runtime(
@@ -442,21 +447,23 @@ def _restart_runtime(runtime_value: str, server_url: str, runtime_profile: str) 
             server_url,
             LOG_DIRECTORY,
             runtime_profile=runtime_profile,
+            acceleration=acceleration,
         )
         return readiness_html(readiness, runtime_profile)
     except H3BridgeError as exc:
         return _status_error(str(exc))
 
 
-def _rescan_runtime(runtime_value: str, server_url: str, runtime_profile: str) -> str:
+def _rescan_runtime(runtime_value: str, server_url: str, runtime_profile: str, *acceleration_values) -> str:
+    acceleration = H3Acceleration.from_values(acceleration_values)
     try:
         root = resolve_runtime_root(runtime_value)
-        return readiness_html(inspect_readiness(root, server_url), runtime_profile)
+        return readiness_html(inspect_readiness(root, server_url, acceleration=acceleration), runtime_profile)
     except H3BridgeError as exc:
         return _status_error(str(exc))
 
 
-def _runtime_operation(callback, message: str, runtime_value: str, server_url: str, runtime_profile: str):
+def _runtime_operation(callback, message: str, runtime_value: str, server_url: str, runtime_profile: str, *acceleration_values):
     yield (
         _runtime_notice_html("実行環境を更新中", message),
         gr.update(interactive=False),
@@ -465,7 +472,7 @@ def _runtime_operation(callback, message: str, runtime_value: str, server_url: s
         gr.update(interactive=False),
     )
     try:
-        rendered = callback(runtime_value, server_url, runtime_profile)
+        rendered = callback(runtime_value, server_url, runtime_profile, *acceleration_values)
     except Exception as exc:
         rendered = _status_error(str(exc))
     yield (
@@ -477,33 +484,36 @@ def _runtime_operation(callback, message: str, runtime_value: str, server_url: s
     )
 
 
-def _connect_runtime_updates(runtime_value: str, server_url: str, runtime_profile: str):
+def _connect_runtime_updates(runtime_value: str, server_url: str, runtime_profile: str, *acceleration_values):
     yield from _runtime_operation(
         _connect_runtime,
         "H3 backendへ接続しています…",
         runtime_value,
         server_url,
         runtime_profile,
+        *acceleration_values,
     )
 
 
-def _restart_runtime_updates(runtime_value: str, server_url: str, runtime_profile: str):
+def _restart_runtime_updates(runtime_value: str, server_url: str, runtime_profile: str, *acceleration_values):
     yield from _runtime_operation(
         _restart_runtime,
         "選択した起動プロファイルで再起動しています…",
         runtime_value,
         server_url,
         runtime_profile,
+        *acceleration_values,
     )
 
 
-def _rescan_runtime_updates(runtime_value: str, server_url: str, runtime_profile: str):
+def _rescan_runtime_updates(runtime_value: str, server_url: str, runtime_profile: str, *acceleration_values):
     yield from _runtime_operation(
         _rescan_runtime,
         "H3 backendとモデルの状態を確認しています…",
         runtime_value,
         server_url,
         runtime_profile,
+        *acceleration_values,
     )
 
 
@@ -560,6 +570,8 @@ def _load_history_video(selected: str, runtime_value: str):
 
 
 def _matching_generation_preset(request: H3Request) -> str:
+    if request.acceleration != H3Acceleration():
+        return "custom"
     for preset in ("quick", "recommended", "final"):
         quality, duration, steps, scheduler, ref_image_size, _ = generation_preset_values(
             preset,
@@ -576,14 +588,14 @@ def _matching_generation_preset(request: H3Request) -> str:
     return "custom"
 
 
-def _restore_history_settings(selected: str, runtime_value: str):
+def _restore_history_settings(selected: str, runtime_value: str, include_acceleration: bool = False):
     try:
         if not selected:
             raise H3BridgeError("設定を復元する履歴を選択してください。")
         items, _, _ = _history_state(runtime_value)
         request = load_history_request(selected, items, OUTPUT_DIRECTORY)
     except H3BridgeError as exc:
-        return (*[gr.update() for _ in range(21)], progress_html("error", str(exc), 0.0))
+        return (*[gr.update() for _ in range(21)], progress_html("error", str(exc), 0.0), *([gr.update() for _ in H3Acceleration().values()] if include_acceleration else []))
 
     effective_ref_image_size = request.ref_image_size if request.mode == MODE_REFERENCES else "match"
     restored_request = H3Request(
@@ -596,6 +608,7 @@ def _restore_history_settings(selected: str, runtime_value: str):
         seed=request.seed,
         scheduler=request.scheduler,
         ref_image_size=effective_ref_image_size,
+        acceleration=request.acceleration,
     )
     mode_updates = _mode_updates(
         restored_request.mode,
@@ -636,6 +649,7 @@ def _restore_history_settings(selected: str, runtime_value: str):
         gr.update(value=_preset_state_html(preset)),
         "",
         progress_html("idle", message, 0.0),
+        *([gr.update(value=value) for value in request.acceleration.values()] if include_acceleration else []),
     )
 
 
@@ -654,6 +668,7 @@ def _request_from_ui(
     seed,
     scheduler,
     ref_image_size,
+    *acceleration_values,
 ) -> H3Request:
     try:
         duration_value = float(duration)
@@ -684,6 +699,7 @@ def _request_from_ui(
         seed=seed_value,
         scheduler=str(scheduler),
         ref_image_size=str(ref_image_size),
+        acceleration=H3Acceleration.from_values(acceleration_values),
     )
 
 
@@ -705,6 +721,7 @@ def _generate(
     seed,
     scheduler,
     ref_image_size,
+    *acceleration_values,
 ):
     yield (
         progress_html("prepare", "生成条件を確認しています", 0.02),
@@ -734,6 +751,7 @@ def _generate(
                 seed,
                 scheduler,
                 ref_image_size,
+                *acceleration_values,
             )
             validate_request(request)
         except (H3BridgeError, ValueError, TypeError, OverflowError) as exc:
@@ -906,6 +924,50 @@ def _runtime_profile_pending(runtime_profile: str) -> str:
         "再起動すると反映されます",
         f"{label}を選択しました。「選択設定で再起動」を押してください。",
         tone="warn",
+    )
+
+
+def _restore_history_with_acceleration(selected: str, runtime_value: str):
+    return _restore_history_settings(selected, runtime_value, include_acceleration=True)
+
+
+def _initial_ui_with_acceleration(*args):
+    # Do not permit a Turbo preset before initial readiness can overwrite Steps.
+    return (*_initial_ui_updates(*args), *[gr.update(interactive=True) for _ in range(11)])
+
+
+def _acceleration_pending(*values):
+    option = H3Acceleration.from_values(values)
+    message = "選択した構成で「状態を再確認」を押してください。重みは自動取得しません。"
+    if option.decode_mode == "fast":
+        message += "Fast VAEの切替には「選択設定で再起動」が必要です。"
+    else:
+        message += "Fast VAEから標準へ戻した場合も再起動してください。"
+    return _runtime_notice_html("高速化構成を変更しました", message, tone="warn")
+
+
+def _turbo_preset_updates(steps, aspect, quality, duration, ref_image_size):
+    # Only the explicit button changes Steps; it leaves VAE / Sparse choices alone.
+    return (
+        "fused_turbo", steps, "simple",
+        settings_summary_html(aspect, quality, duration, steps, "simple", ref_image_size),
+        _preset_state_html("custom"),
+    )
+
+
+def _turbo_four_updates(aspect, quality, duration, ref_image_size):
+    return _turbo_preset_updates(4, aspect, quality, duration, ref_image_size)
+
+
+def _turbo_eight_updates(aspect, quality, duration, ref_image_size):
+    return _turbo_preset_updates(8, aspect, quality, duration, ref_image_size)
+
+
+def _reset_acceleration_updates(aspect, quality, duration, ref_image_size):
+    return (
+        *H3Acceleration().values(), 20, "simple",
+        settings_summary_html(aspect, quality, duration, 20, "simple", ref_image_size),
+        _preset_state_html("custom"),
     )
 
 
@@ -1088,6 +1150,7 @@ def _build_ui():
                             interactive=False,
                             elem_id="h3-duration",
                         )
+                        acceleration_controls, acceleration_buttons = create_acceleration_controls()
                         with gr.Row(elem_classes=["h3-generate-row"]):
                             generate_button = gr.Button(
                                 "映像＋音声を生成",
@@ -1300,7 +1363,7 @@ def _build_ui():
             )
 
         initialize_trigger.click(
-            fn=_initial_ui_updates,
+            fn=_initial_ui_with_acceleration,
             inputs=[runtime_path, server_url, runtime_profile, aspect],
             outputs=[
                 runtime_status,
@@ -1324,6 +1387,8 @@ def _build_ui():
                 connect_button,
                 restart_button,
                 rescan_button,
+                *acceleration_controls,
+                *acceleration_buttons,
             ],
             show_progress="hidden",
             trigger_mode="once",
@@ -1447,7 +1512,7 @@ def _build_ui():
 
         connect_button.click(
             fn=_connect_runtime_updates,
-            inputs=[runtime_path, server_url, runtime_profile],
+            inputs=[runtime_path, server_url, runtime_profile, *acceleration_controls],
             outputs=[runtime_status, connect_button, restart_button, rescan_button, runtime_profile],
             show_progress="hidden",
             trigger_mode="once",
@@ -1456,7 +1521,7 @@ def _build_ui():
         )
         restart_button.click(
             fn=_restart_runtime_updates,
-            inputs=[runtime_path, server_url, runtime_profile],
+            inputs=[runtime_path, server_url, runtime_profile, *acceleration_controls],
             outputs=[runtime_status, connect_button, restart_button, rescan_button, runtime_profile],
             show_progress="hidden",
             trigger_mode="once",
@@ -1465,7 +1530,7 @@ def _build_ui():
         )
         rescan_button.click(
             fn=_rescan_runtime_updates,
-            inputs=[runtime_path, server_url, runtime_profile],
+            inputs=[runtime_path, server_url, runtime_profile, *acceleration_controls],
             outputs=[runtime_status, connect_button, restart_button, rescan_button, runtime_profile],
             show_progress="hidden",
             trigger_mode="once",
@@ -1491,7 +1556,7 @@ def _build_ui():
             outputs=[result_video, progress],
         )
         restore_history_button.click(
-            fn=_restore_history_settings,
+            fn=_restore_history_with_acceleration,
             inputs=[history_selector, runtime_path],
             outputs=[
                 mode,
@@ -1516,9 +1581,25 @@ def _build_ui():
                 preset_state,
                 input_validation,
                 progress,
+                *acceleration_controls,
             ],
             queue=False,
             show_progress="hidden",
+        )
+
+        for control in acceleration_controls:
+            control.change(
+                _acceleration_pending, inputs=acceleration_controls, outputs=[runtime_status],
+                queue=False, show_progress="hidden", trigger_mode="always_last",
+            )
+        turbo_inputs = [aspect, quality, duration, ref_image_size]
+        turbo_outputs = [acceleration_controls[0], steps, scheduler, settings_summary, preset_state]
+        for button, callback in zip(acceleration_buttons[:2], [_turbo_four_updates, _turbo_eight_updates]):
+            button.click(callback, inputs=turbo_inputs, outputs=turbo_outputs, queue=False, show_progress="hidden")
+        acceleration_buttons[2].click(
+            _reset_acceleration_updates, inputs=turbo_inputs,
+            outputs=[*acceleration_controls, steps, scheduler, settings_summary, preset_state],
+            queue=False, show_progress="hidden",
         )
 
         generate_button.click(
@@ -1541,6 +1622,7 @@ def _build_ui():
                 seed,
                 scheduler,
                 ref_image_size,
+                *acceleration_controls,
             ],
             outputs=[
                 progress,
