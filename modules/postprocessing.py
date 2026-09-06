@@ -6,6 +6,7 @@ from PIL import Image
 from tqdm import tqdm
 
 from modules import devices, images, infotext_utils, scripts, scripts_postprocessing, shared, ui_common
+from modules.extras_workflow import result_html
 from modules.shared import opts
 
 
@@ -46,6 +47,7 @@ def run_postprocessing(extras_mode, image, image_folder, input_dir, output_dir, 
         outpath = opts.outdir_samples or opts.outdir_extras_samples
 
     infotext = ""
+    display_info = {}
 
     data_to_process = list(get_images(extras_mode, image, image_folder, input_dir))
     shared.state.job_count = len(data_to_process)
@@ -77,6 +79,7 @@ def run_postprocessing(extras_mode, image, image_folder, input_dir, output_dir, 
         initial_pp = scripts_postprocessing.PostprocessedImage(image_data)
 
         scripts.scripts_postproc.run(initial_pp, args)
+        display_info = initial_pp.info
 
         if shared.state.skipped:
             continue
@@ -107,7 +110,7 @@ def run_postprocessing(extras_mode, image, image_folder, input_dir, output_dir, 
 
     devices.torch_gc()
     shared.state.end()
-    return outputs, ui_common.plaintext_to_html(infotext), ""
+    return outputs, result_html(display_info), ""
 
 
 def run_postprocessing_video(_mode, _img, _folder, _in_dir, _out_dir, _show, video_input, *args, save_output: bool = True):

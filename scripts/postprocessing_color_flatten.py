@@ -20,6 +20,13 @@ from modules.krea2_quality import (
 from modules.ui_components import FormRow, InputAccordion
 
 
+def mode_visibility(mode):
+    return tuple(gr.update(visible=visible) for visible in (
+        mode == SMART_MODE, mode == FAST_MODE, mode == SUPERPIXEL_MODE, mode == GRADIENT_MODE,
+        mode != SMART_MODE,
+    ))
+
+
 class ScriptPostprocessingColorFlatten(scripts_postprocessing.ScriptPostprocessing):
     # Keep the public operation name stable: API clients and saved disable/order
     # preferences use this exact string.
@@ -50,11 +57,12 @@ class ScriptPostprocessingColorFlatten(scripts_postprocessing.ScriptPostprocessi
                     value=0.80,
                     elem_id="extras_color_flatten_strength",
                 )
-                edge_protect = gr.Checkbox(
-                    label="Edge Protect",
-                    value=True,
-                    elem_id="extras_color_flatten_edge_protect",
-                )
+                with gr.Column(visible=False, min_width=130, scale=0) as edge_group:
+                    edge_protect = gr.Checkbox(
+                        label="Edge Protect",
+                        value=True,
+                        elem_id="extras_color_flatten_edge_protect",
+                    )
                 despeckle = gr.Checkbox(
                     label="孤立した白/黒粒を補修（雪・星ではOFF）",
                     value=False,
@@ -70,7 +78,7 @@ class ScriptPostprocessingColorFlatten(scripts_postprocessing.ScriptPostprocessi
                 elem_id="extras_color_flatten_analysis_long_edge",
             )
 
-            with FormRow():
+            with FormRow(visible=False) as mean_shift_group:
                 mean_shift_sp = gr.Slider(
                     minimum=1,
                     maximum=80,
@@ -88,7 +96,7 @@ class ScriptPostprocessingColorFlatten(scripts_postprocessing.ScriptPostprocessi
                     elem_id="extras_color_flatten_mean_shift_sr",
                 )
 
-            with FormRow():
+            with FormRow(visible=False) as superpixel_group:
                 n_segments = gr.Slider(
                     minimum=100,
                     maximum=10000,
@@ -106,7 +114,7 @@ class ScriptPostprocessingColorFlatten(scripts_postprocessing.ScriptPostprocessi
                     elem_id="extras_color_flatten_compactness",
                 )
 
-            with FormRow():
+            with FormRow(visible=False) as gradient_group:
                 gradient_radius = gr.Slider(
                     minimum=1.0,
                     maximum=MAX_GRADIENT_RADIUS,
@@ -126,6 +134,12 @@ class ScriptPostprocessingColorFlatten(scripts_postprocessing.ScriptPostprocessi
                     value=DEFAULT_GRADIENT_DETAIL_THRESHOLD,
                     elem_id="extras_color_flatten_gradient_detail_threshold",
                 )
+
+        gr.on(
+            fn=mode_visibility, inputs=[mode],
+            outputs=[analysis_long_edge, mean_shift_group, superpixel_group, gradient_group, edge_group],
+            queue=False, show_progress="hidden",
+        )
 
         return {
             "enable": enable,

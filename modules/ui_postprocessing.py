@@ -2,6 +2,7 @@ import gradio as gr
 
 import modules.infotext_utils as parameters_copypaste
 from modules import call_queue, postprocessing, scripts, shared, ui_common, ui_toprow
+from modules.extras_workflow import bind_workflow
 from modules.ui_components import ResizeHandleRow
 
 
@@ -33,7 +34,12 @@ def create_ui():
             toprow.create_inline_toprow_image()
             submit = toprow.submit
 
+            plan = gr.HTML(elem_id="extras_execution_plan")
+            solo_button = gr.Button("Grain Cleanerだけ実行する設定にする", elem_id="extras_grain_only")
+
             output_panel = ui_common.create_output_panel("extras", shared.opts.outdir_extras_samples)
+
+    bind_workflow(scripts.scripts_postproc, extras_image, tab_index, plan, solo_button)
 
     tab_single.select(fn=lambda: 0, outputs=[tab_index], queue=False)
     tab_batch.select(fn=lambda: 1, outputs=[tab_index], queue=False)
@@ -55,5 +61,3 @@ def create_ui():
     )
 
     parameters_copypaste.add_paste_fields("extras", extras_image, None)
-
-    extras_image.change(fn=scripts.scripts_postproc.image_changed, queue=False)

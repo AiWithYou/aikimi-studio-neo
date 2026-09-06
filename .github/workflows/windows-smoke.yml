@@ -20,6 +20,12 @@ on:
       - "modules/aikimi_security/**"
       - "modules/api/**"
       - "modules/cmd_args.py"
+      - "modules/extras_workflow.py"
+      - "modules/grain*.py"
+      - "modules/postprocessing.py"
+      - "scripts/postprocessing_*.py"
+      - "tools/tests/test_extras_usability.py"
+      - "tools/tests/test_grain*.py"
       - "modules/gradio_*.py"
       - "modules/initialize_util.py"
       - "modules/launch_utils.py"
@@ -96,6 +102,12 @@ on:
       - "modules/aikimi_security/**"
       - "modules/api/**"
       - "modules/cmd_args.py"
+      - "modules/extras_workflow.py"
+      - "modules/grain*.py"
+      - "modules/postprocessing.py"
+      - "scripts/postprocessing_*.py"
+      - "tools/tests/test_extras_usability.py"
+      - "tools/tests/test_grain*.py"
       - "modules/gradio_*.py"
       - "modules/initialize_util.py"
       - "modules/launch_utils.py"
@@ -234,6 +246,9 @@ jobs:
           --module tools.tests.test_chromium_helpers
           --module tools.tests.test_ci_workflow_boundaries
           --module tools.tests.test_extra_networks_lora_filter
+          --module tools.tests.test_extras_usability
+          --module tools.tests.test_grain_cleaner
+          --module tools.tests.test_grain_postprocessing
           --module tools.tests.test_gradio_compatibility
           --module tools.tests.test_gradio_frontend_compat
           --module tools.tests.test_gradio_frontend_compat_chromium

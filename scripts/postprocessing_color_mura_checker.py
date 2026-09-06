@@ -206,6 +206,8 @@ class ScriptPostprocessingColorMuraChecker(scripts_postprocessing.ScriptPostproc
             return
 
         outputs = set(color_mura_outputs or [])
+        if not outputs and not color_mura_add_metrics:
+            return
         params = MuraParams(
             analysis_long_edge=int(color_mura_analysis_long_edge),
             blur_sigma=float(color_mura_blur_sigma),

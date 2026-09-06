@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+import hashlib
 import io
 import time
 from dataclasses import asdict, dataclass
+from threading import RLock
 
 import cv2
 import numpy as np
@@ -65,8 +67,6 @@ def prepare_image(image):
         image = ImageCms.profileToProfile(
             image, ImageCms.ImageCmsProfile(io.BytesIO(profile)), ImageCms.createProfile("sRGB"), outputMode=image.mode
         )
-    else:
-        image = image.copy()
     image.info["icc_profile"] = ImageCms.ImageCmsProfile(ImageCms.createProfile("sRGB")).tobytes()
     return image, "ICC converted to sRGB" if profile else "assumed sRGB (no ICC)"
 
@@ -79,13 +79,13 @@ def mask_array(mask, size):
     return np.asarray(mask, dtype=np.float32) / 255
 
 
-def _expand_grid(grid, shape):
+def _grid_coordinates(shape):
     """64pxパッチ中心(31.5)に合わせ、端では最近傍の値を延長する。"""
     height, width = shape
     xx, yy = np.meshgrid(
         (np.arange(width, dtype=np.float32) - 31.5) / 32, (np.arange(height, dtype=np.float32) - 31.5) / 32
     )
-    return cv2.remap(grid, xx, yy, cv2.INTER_LINEAR, borderMode=cv2.BORDER_REPLICATE)
+    return xx, yy
 
 
 def _reference(bands, features, g_mid, r_mid, mode, roi):
@@ -114,45 +114,58 @@ def _reference(bands, features, g_mid, r_mid, mode, roi):
     if mode == "sample":
         return values[0, 0], np.ones((height, width), np.float32), count
     support = gaussian(q, 1.0)
-    maps = []
+    coordinates = _grid_coordinates((height, width))
+    # 各面を最終配列へ書き込み、原寸11枚をstackで再コピーしない。
+    maps = np.empty((values.shape[2], height, width), np.float32)
     for i in range(values.shape[2]):
         v = values[..., i]
         smoothed = gaussian(q * (v * v if i < 6 else v), 1.0) / np.maximum(support, 1e-12)
-        maps.append(_expand_grid(np.sqrt(np.maximum(smoothed, 0)) if i < 6 else smoothed, (height, width)))
-    return np.stack(maps, axis=-1), _expand_grid(smoothstep(0.10, 0.50, support), (height, width)), count
+        cv2.remap(
+            np.sqrt(np.maximum(smoothed, 0)) if i < 6 else smoothed,
+            *coordinates,
+            cv2.INTER_LINEAR,
+            dst=maps[i],
+            borderMode=cv2.BORDER_REPLICATE,
+        )
+    return (
+        np.moveaxis(maps, 0, -1),
+        cv2.remap(smoothstep(0.10, 0.50, support), *coordinates, cv2.INTER_LINEAR, borderMode=cv2.BORDER_REPLICATE),
+        count,
+    )
 
 
-def clean_grain(image, settings=None, *, sample_roi=None, apply_mask=None, protect_mask=None, diagnostics=False):
-    settings = settings or GrainSettings()
-    settings.validate()
-    started = time.perf_counter()
-    baseline, color_status = prepare_image(image)
-    u = mask_array(apply_mask, baseline.size)
-    h = mask_array(protect_mask, baseline.size)
-    if settings.mode == "sample":
-        if sample_roi is None or len(sample_roi) != 4 or any(int(v) != v for v in sample_roi):
-            raise ValueError("sample は整数の x, y, width, height が必要です")
-        x, y, w, height = sample_roi = tuple(int(v) for v in sample_roi)
-        if min(x, y) < 0 or min(w, height) < 32 or x + w > baseline.width or y + height > baseline.height:
-            raise ValueError("見本範囲は画像内で縦横32画素以上にしてください")
-    report = {
-        "algorithm_version": "0.2",
-        "settings": asdict(settings),
-        "size": list(baseline.size),
-        "color": color_status,
-        "sample_roi": sample_roi,
-        "apply_mask": u is not None,
-        "protect_mask": h is not None,
-    }
-    views = {}
+class GrainAnalysisCache:
+    """直近の1画像だけ保持する。強度・マスク・診断表示は解析キーに含めない。"""
 
-    def finish(output, status):
-        report.update(status=status, elapsed_seconds=round(time.perf_counter() - started, 4))
-        output.info.update(baseline.info)
-        return output, report, views
+    def __init__(self):
+        self.lock = RLock()
+        self.key = None
+        self.analysis = None
 
-    if settings.strength == 0 or (u is not None and not u.any()) or (h is not None and np.all(h == 1)):
-        return finish(baseline, "UNCHANGED")
+    def clear(self):
+        with self.lock:
+            self.key = None
+            self.analysis = None
+
+    def get(self, baseline, settings, sample_roi):
+        key = (
+            baseline.mode,
+            baseline.size,
+            hashlib.sha256(baseline.tobytes()).digest(),
+            settings.grain_scale,
+            settings.mode,
+            sample_roi,
+        )
+        with self.lock:
+            if key == self.key:
+                return self.analysis, True
+            self.clear()
+            self.analysis = analyze_grain(baseline, settings, sample_roi)
+            self.key = key
+            return self.analysis, False
+
+
+def analyze_grain(baseline, settings, sample_roi):
     original = np.asarray(baseline.convert("RGB"))
     rgb = original.astype(np.float32) / 255
     units = np.array([100, 128, 128], np.float32)
@@ -178,9 +191,8 @@ def clean_grain(image, settings=None, *, sample_roi=None, apply_mask=None, prote
     del gx, gy, jxx, jyy, jxy
     features.append(energy)
     refs, support, count = _reference(bands, features, g_mid, r_mid, settings.mode, sample_roi)
-    report["reference_count"] = count
     if refs is None:
-        return finish(baseline, "INSUFFICIENT_REFERENCE")
+        return {"reference_count": count}
     tau = [refs[..., i : i + 3] for i in (0, 3)]
     protection = np.zeros(original.shape[:2], np.float32)
     for i, feature in enumerate(features[:4]):
@@ -202,7 +214,80 @@ def clean_grain(image, settings=None, *, sample_roi=None, apply_mask=None, prote
     yy, xx = np.ogrid[-radius : radius + 1, -radius : radius + 1]
     kernel = ((xx * xx + yy * yy) <= radius * radius).astype(np.uint8)
     protection = np.maximum(protection, gaussian(cv2.dilate(protection, kernel), 0.6 * r))
-    mask = support * (1 - smoothstep(0.003, 0.015, r_mid)) * (1 - protection) ** (1 + 2 * settings.preserve_detail)
+    # eta用の5面をキャッシュへ持ち越さない。
+    tau = tuple(t.copy() for t in tau)
+    return dict(
+        reference_count=count,
+        lab=lab,
+        bands=bands,
+        tau=tau,
+        protection=protection,
+        support=support,
+        flat=1 - smoothstep(0.003, 0.015, r_mid),
+        amplitude_median=[np.median(t.reshape(-1, 3), axis=0).tolist() for t in tau],
+    )
+
+
+def clean_grain(
+    image, settings=None, *, sample_roi=None, apply_mask=None, protect_mask=None, diagnostics=False, cache=None
+):
+    settings = settings or GrainSettings()
+    settings.validate()
+    started = time.perf_counter()
+    baseline, color_status = prepare_image(image)
+    u = mask_array(apply_mask, baseline.size)
+    h = mask_array(protect_mask, baseline.size)
+    if settings.mode == "sample":
+        if sample_roi is None or len(sample_roi) != 4 or any(int(v) != v for v in sample_roi):
+            raise ValueError("sample は整数の x, y, width, height が必要です")
+        x, y, w, height = sample_roi = tuple(int(v) for v in sample_roi)
+        if min(x, y) < 0 or min(w, height) < 32 or x + w > baseline.width or y + height > baseline.height:
+            raise ValueError("見本範囲は画像内で縦横32画素以上にしてください")
+    report = {
+        "algorithm_version": "0.2",
+        "settings": asdict(settings),
+        "size": list(baseline.size),
+        "color": color_status,
+        "sample_roi": sample_roi,
+        "apply_mask": u is not None,
+        "protect_mask": h is not None,
+    }
+    views = {}
+
+    def finish(output, status):
+        report.update(status=status, elapsed_seconds=round(time.perf_counter() - started, 4))
+        if diagnostics and not views:
+            report["diagnostics_omitted"] = "変更がないため診断画像を省略しました"
+        output.info.update(baseline.info)
+        return output, report, views
+
+    if settings.strength == 0 or (u is not None and not u.any()) or (h is not None and np.all(h == 1)):
+        report["unchanged_reason"] = (
+            "強度が0です"
+            if settings.strength == 0
+            else "処理マスクが全面黒です"
+            if u is not None and not u.any()
+            else "全面が保護されています"
+        )
+        return finish(baseline, "UNCHANGED")
+    analysis_started = time.perf_counter()
+    if cache is None:
+        analysis, hit = analyze_grain(baseline, settings, sample_roi), False
+    else:
+        analysis, hit = cache.get(baseline, settings, sample_roi)
+    report.update(
+        reference_count=analysis["reference_count"],
+        analysis_cache_hit=hit,
+        analysis_seconds=round(time.perf_counter() - analysis_started, 4),
+    )
+    if analysis["reference_count"] < 4 and settings.mode == "auto":
+        return finish(baseline, "INSUFFICIENT_REFERENCE")
+    original = np.asarray(baseline.convert("RGB"))
+    rgb = original.astype(np.float32) / 255
+    units = np.array([100, 128, 128], np.float32)
+    lab, bands, tau = analysis["lab"], analysis["bands"], analysis["tau"]
+    support, protection = analysis["support"], analysis["protection"]
+    mask = support * analysis["flat"] * (1 - protection) ** (1 + 2 * settings.preserve_detail)
     if u is not None:
         mask *= u
     if h is not None:
@@ -219,6 +304,8 @@ def clean_grain(image, settings=None, *, sample_roi=None, apply_mask=None, prote
                 settings.strength * settings.chroma_strength,
             ),
         ):
+            if strength == 0:
+                continue
             z = band[..., channels]
             magnitude = abs(z) if channels == 0 else np.linalg.norm(z, axis=-1)
             safe = np.maximum(amplitude, 0.001)
@@ -239,7 +326,7 @@ def clean_grain(image, settings=None, *, sample_roi=None, apply_mask=None, prote
     result = np.rint(np.clip(result, 0, 1) * 255).astype(np.uint8)
     result[suppression == 0] = original[suppression == 0]
     report["changed_fraction"] = float(np.mean(np.any(result != original, axis=-1)))
-    report["amplitude_median"] = [np.median(t.reshape(-1, 3), axis=0).tolist() for t in tau]
+    report["amplitude_median"] = analysis["amplitude_median"]
     output = Image.fromarray(result)
     if baseline.mode == "RGBA":
         output.putalpha(baseline.getchannel("A"))

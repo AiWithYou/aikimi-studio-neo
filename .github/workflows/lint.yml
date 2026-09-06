@@ -12,6 +12,10 @@ on:
       - "modules/aikimi_diagnostics.py"
       - "modules/aikimi_security/**"
       - "modules/gradio_compat.py"
+      - "modules/extras_workflow.py"
+      - "modules/grain*.py"
+      - "scripts/postprocessing_grain_cleaner.py"
+      - "tools/tests/test_extras_usability.py"
       - "modules/gradio_extensions.py"
       - "modules/gradio_frontend_compat.py"
       - "modules/gradio_file_url.py"
@@ -60,6 +64,10 @@ on:
       - "modules/aikimi_diagnostics.py"
       - "modules/aikimi_security/**"
       - "modules/gradio_compat.py"
+      - "modules/extras_workflow.py"
+      - "modules/grain*.py"
+      - "scripts/postprocessing_grain_cleaner.py"
+      - "tools/tests/test_extras_usability.py"
       - "modules/gradio_extensions.py"
       - "modules/gradio_frontend_compat.py"
       - "modules/gradio_file_url.py"
@@ -128,6 +136,11 @@ jobs:
             modules/aikimi_diagnostics.py
             modules/aikimi_security
             modules/gradio_compat.py
+            modules/extras_workflow.py
+            modules/grain_cleaner.py
+            modules/grain_selection.py
+            scripts/postprocessing_grain_cleaner.py
+            tools/tests/test_extras_usability.py
             modules/gradio_extensions.py
             modules/gradio_frontend_compat.py
             modules/gradio_file_url.py

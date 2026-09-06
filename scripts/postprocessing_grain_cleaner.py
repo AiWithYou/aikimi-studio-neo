@@ -3,13 +3,19 @@ import json
 import gradio as gr
 
 from modules import scripts_postprocessing
-from modules.grain_cleaner import GrainSettings, clean_grain
+from modules.grain_cleaner import GrainAnalysisCache, GrainSettings, clean_grain
 from modules.ui_components import FormRow, InputAccordion
 
 
 class ScriptPostprocessingGrainCleaner(scripts_postprocessing.ScriptPostprocessing):
     name = "Grain Cleaner"
     order = 1040
+
+    def __init__(self):
+        self.analysis_cache = GrainAnalysisCache()
+
+    def image_changed(self):
+        self.analysis_cache.clear()
 
     def ui(self):
         with InputAccordion(
@@ -26,10 +32,31 @@ class ScriptPostprocessingGrainCleaner(scripts_postprocessing.ScriptPostprocessi
                 grain_scale = gr.Slider(0.5, 2, value=1, step=0.05, label="粒サイズ")
             with gr.Accordion("見本範囲・マスク・診断", open=False):
                 mode = gr.Radio([("自動", "auto"), ("見本範囲", "sample")], value="auto", label="振幅の推定")
+                with gr.Column(visible=False) as reference_group:
+                    self.reference_preview = gr.Image(
+                        label="見本の対角2点を選択（Upscaleオフ時）",
+                        type="pil",
+                        interactive=False,
+                        format="png",
+                        height=320,
+                        buttons=[],
+                    )
+                    self.reference_note = gr.Markdown("画像を読み込んでください。")
+                    self.reference_master = gr.State(None)
+                    self.reference_size = gr.State(None)
+                    self.reference_corner = gr.State(None)
                 sample_roi = gr.Textbox(
                     label="見本範囲 x, y, width, height",
                     placeholder="例: 0, 0, 128, 128",
                     info="滑らかにしたい面だけを選びます。向き補正後の原寸座標、縦横32画素以上。",
+                    visible=False,
+                )
+                mode.change(
+                    lambda value: (gr.update(visible=value == "sample"), gr.update(visible=value == "sample")),
+                    inputs=[mode],
+                    outputs=[reference_group, sample_roi],
+                    queue=False,
+                    show_progress="hidden",
                 )
                 with FormRow():
                     apply_mask = gr.Image(
@@ -67,6 +94,7 @@ class ScriptPostprocessingGrainCleaner(scripts_postprocessing.ScriptPostprocessi
         diagnostics=False,
     ):
         if not enable:
+            self.analysis_cache.clear()
             return
         try:
             roi = tuple(int(v.strip()) for v in sample_roi.split(",")) if mode == "sample" and sample_roi else None
@@ -80,6 +108,7 @@ class ScriptPostprocessingGrainCleaner(scripts_postprocessing.ScriptPostprocessi
                 apply_mask=apply_mask,
                 protect_mask=protect_mask,
                 diagnostics=diagnostics,
+                cache=self.analysis_cache,
             )
         except (ValueError, TypeError) as exc:
             raise gr.Error(str(exc)) from exc
