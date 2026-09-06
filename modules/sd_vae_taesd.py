@@ -105,9 +105,11 @@ class TAESDEncoder(nn.Module):
         load_state_dict(self.encoder, load_torch_file(encoder_path))
 
     def forward(self, x_sample: torch.Tensor) -> torch.Tensor:
+        # Pack encoded 32-channel latents, never the three-channel RGB input.
+        x_sample = self.encoder(x_sample)
         if self.latent_channels == 32:
             x_sample = x_sample.reshape(x_sample.shape[0], self.latent_channels, x_sample.shape[-2] // 2, 2, x_sample.shape[-1] // 2, 2).permute(0, 1, 3, 5, 2, 4).reshape(x_sample.shape[0], self.latent_channels * 4, x_sample.shape[-2] // 2, x_sample.shape[-1] // 2)
-        return self.encoder(x_sample)
+        return x_sample
 
 
 class MemBlock(nn.Module):

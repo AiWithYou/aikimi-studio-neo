@@ -2,6 +2,7 @@ import os
 import tempfile
 import time
 from collections import namedtuple
+from contextlib import suppress
 from pathlib import Path
 
 import gradio as gr
@@ -25,7 +26,8 @@ def _shared_module():
 
 def register_tmp_file(gradio_app: gr.Blocks, filename: os.PathLike):
     filename = gradio.utils.abspath(filename)
-    gradio_app.temp_file_sets[0] = gradio_app.temp_file_sets[0] | {filename}
+    # Preserve the shared registry and avoid copying every previously saved path.
+    gradio_app.temp_file_sets[0].add(filename)
 
 
 def check_tmp_file(gradio_app: gr.Blocks, filename: os.PathLike) -> bool:
@@ -47,33 +49,37 @@ def save_pil_to_file(
         register_tmp_file(shared_module.demo, filename_with_mtime)
         return filename_with_mtime
 
-    if shared_module.opts.temp_dir:
-        dir = shared_module.opts.temp_dir
-    else:
-        dir = cache_dir
-        os.makedirs(dir, exist_ok=True)
-
-    use_metadata = False
-    metadata = PngImagePlugin.PngInfo()
-    for key, value in pil_image.info.items():
-        if isinstance(key, str) and isinstance(value, str):
-            metadata.add_text(key, value)
-            use_metadata = True
+    directory = shared_module.opts.temp_dir or cache_dir
+    os.makedirs(directory, exist_ok=True)
 
     normalized_format = str(format or "png").lower()
+    save_format = "JPEG" if normalized_format in {"jpg", "jpeg"} else normalized_format.upper()
+    save_kwargs = {"format": save_format}
+    if normalized_format == "png":
+        metadata = PngImagePlugin.PngInfo()
+        use_metadata = False
+        for key, value in pil_image.info.items():
+            if isinstance(key, str) and isinstance(value, str):
+                metadata.add_text(key, value)
+                use_metadata = True
+        if use_metadata:
+            save_kwargs["pnginfo"] = metadata
+
     suffix = f".{normalized_format.replace('jpeg', 'jpg')}"
     file_obj = tempfile.NamedTemporaryFile(
         delete=False,
         prefix=MANAGED_TEMP_PREFIX,
         suffix=suffix,
-        dir=dir,
+        dir=directory,
     )
     file_obj.close()
-    save_format = "JPEG" if normalized_format in {"jpg", "jpeg"} else normalized_format.upper()
-    save_kwargs = {"format": save_format}
-    if normalized_format == "png" and use_metadata:
-        save_kwargs["pnginfo"] = metadata
-    pil_image.save(file_obj.name, **save_kwargs)
+    try:
+        pil_image.save(file_obj.name, **save_kwargs)
+    except BaseException:
+        # Remove only this failed output; cleanup must not mask the save error.
+        with suppress(OSError):
+            os.unlink(file_obj.name)
+        raise
     return file_obj.name
 
 
