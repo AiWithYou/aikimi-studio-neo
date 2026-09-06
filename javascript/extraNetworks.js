@@ -37,6 +37,10 @@ function extraNetworksApplyLoraTreePresetFilter(page, uiPreset, filterEnabled) {
         );
     });
     page.querySelectorAll(".extra-network-tree li[data-tree-entry-type='dir']").forEach(function (directory) {
+        if (!filterEnabled) {
+            directory.hidden = false;
+            return;
+        }
         const hasVisibleFile = Array.from(directory.querySelectorAll(fileSelector)).some(function (item) {
             return !item.hidden;
         });

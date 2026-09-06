@@ -45,9 +45,9 @@ def save_pil_to_file(
     already_saved_as = getattr(pil_image, "already_saved_as", None)
     if already_saved_as and os.path.isfile(already_saved_as):
         register_tmp_file(shared_module.demo, already_saved_as)
-        filename_with_mtime = f"{already_saved_as}?{os.path.getmtime(already_saved_as)}"
-        register_tmp_file(shared_module.demo, filename_with_mtime)
-        return filename_with_mtime
+        # Gradio 6 は実在するパスを開いて内容ハッシュを計算する。
+        # URL用のクエリをファイル名へ付加するとWindowsで読込に失敗する。
+        return os.fspath(already_saved_as)
 
     directory = shared_module.opts.temp_dir or cache_dir
     os.makedirs(directory, exist_ok=True)

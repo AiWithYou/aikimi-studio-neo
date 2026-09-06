@@ -69,7 +69,7 @@ class AikimiTabsTests(unittest.TestCase):
         self.assertNotIn("aikimi-txt2img-anima38", create_navigation)
         self.assertIn('querySelector("#forge_ui_preset")', self.javascript)
         self.assertIn("const accordionId = animaAccordionId(containerId)", self.javascript)
-        self.assertIn("async function selectFeaturePreset(feature)", self.javascript)
+        self.assertIn("async function selectFeaturePreset(feature, sequence)", self.javascript)
 
     def test_preset_option_uses_semantic_exact_match_and_gradio6_mousedown(self):
         self.assertIn('option.getAttribute("aria-label")', self.javascript)
@@ -153,7 +153,7 @@ class AikimiTabsTests(unittest.TestCase):
 
     def test_programmatic_host_click_keeps_alias_activation(self):
         self.assertIn("activatingFeature && selectedButtonMatches", self.javascript)
-        self.assertIn("if (sequence !== activationSequence) {", self.javascript)
+        self.assertIn("if (sequence !== activationSequence) return;", self.javascript)
         self.assertIn("let activationQueue = Promise.resolve()", self.javascript)
         self.assertIn("function queueFeatureActivation(feature)", self.javascript)
         self.assertIn('FEATURES[activeFeature]?.kind === "alias"', self.javascript)

@@ -680,6 +680,7 @@ class MiniMaxH3RuntimeTests(unittest.TestCase):
             Path("logs"),
             runtime_profile=RUNTIME_PROFILE_LOW_RAM,
             wait_seconds=1,
+            acceleration=None,
         )
 
     def test_readiness_html_never_labels_async_one_as_fast_profile(self):
@@ -1368,7 +1369,8 @@ class MiniMaxH3RuntimeTests(unittest.TestCase):
             self.assertEqual(metadata["prompt_id"], "completed-job-1234")
             self.assertEqual(metadata["seed"], 314159)
             self.assertEqual(metadata["runtime_profile"], RUNTIME_PROFILE_FAST)
-            self.assertEqual(metadata["schema_version"], 1)
+            self.assertEqual(metadata["schema_version"], 2)
+            self.assertEqual(metadata["acceleration"]["attention"], "dense")
             self.assertEqual(metadata["source_backend"], "comfyui")
             self.assertEqual(metadata["source_file"], source.name)
             self.assertNotIn("source", metadata)

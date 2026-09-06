@@ -532,7 +532,11 @@ class MiniMaxH3StudioCallbackTests(unittest.TestCase):
             for dependency in dependencies
             if any(target[0] == generate_id and target[1] == "click" for target in dependency["targets"])
         )
-        self.assertEqual(len(generate["inputs"]), 17)
+        self.assertEqual(len(generate["inputs"]), 25)
+        self.assertEqual(generate["inputs"][-8:], [component_ids[elem_id] for elem_id in (
+            "h3-model-variant", "h3-video-vae", "h3-decode-mode", "h3-tile-batch",
+            "h3-attention-mode", "h3-sparse-tau", "h3-sparse-keep", "h3-sparse-start",
+        )])
         self.assertEqual(len(generate["outputs"]), 8)
         self.assertEqual(generate["trigger_mode"], "once")
 
@@ -598,7 +602,8 @@ class MiniMaxH3StudioCallbackTests(unittest.TestCase):
             if any(target[0] == initialize_id and target[1] == "click" for target in dependency["targets"])
         )
         self.assertEqual(len(initialize["inputs"]), 4)
-        self.assertEqual(len(initialize["outputs"]), 21)
+        self.assertEqual(len(initialize["outputs"]), 32)
+        self.assertEqual(initialize["outputs"][21:29], generate["inputs"][-8:])
         self.assertEqual(initialize["trigger_mode"], "once")
 
         refresh_id = component_ids["h3-history-refresh"]
@@ -616,7 +621,8 @@ class MiniMaxH3StudioCallbackTests(unittest.TestCase):
             if any(target[0] == restore_id and target[1] == "click" for target in dependency["targets"])
         )
         self.assertEqual(len(restore["inputs"]), 2)
-        self.assertEqual(len(restore["outputs"]), 22)
+        self.assertEqual(len(restore["outputs"]), 30)
+        self.assertEqual(restore["outputs"][-8:], generate["inputs"][-8:])
         self.assertFalse(restore["queue"])
 
         runtime_functions = [

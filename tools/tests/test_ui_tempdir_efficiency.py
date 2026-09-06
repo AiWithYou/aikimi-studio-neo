@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import tempfile
 import unittest
 from pathlib import Path
@@ -86,10 +87,22 @@ class TempImageEfficiencyTests(unittest.TestCase):
         before = target.read_bytes()
         with patch.object(self.image, "save", side_effect=AssertionError("must reuse saved file")):
             filename = ui_tempdir.save_pil_to_file(self.image, cache_dir=self.root)
-        self.assertTrue(filename.startswith(str(target) + "?"))
+        self.assertEqual(filename, str(target))
         self.assertTrue(ui_tempdir.check_tmp_file(self.shared.demo, target))
         self.assertTrue(ui_tempdir.check_tmp_file(self.shared.demo, filename))
         self.assertEqual(target.read_bytes(), before)
+
+    def test_saved_gallery_image_passes_gradio_cache_file_reader(self):
+        target = self.root / "saved.png"
+        self.image.save(target)
+        self.image.already_saved_as = str(target)
+        with gr.Blocks():
+            gallery = gr.Gallery(format="png")
+        with patch.object(gr.processing_utils, "save_pil_to_cache", ui_tempdir.save_pil_to_file):
+            result = gallery.postprocess([self.image])
+        cached = asyncio.run(gallery.async_move_resource_to_block_cache(result.root[0].image.path))
+        with Image.open(cached) as reopened:
+            self.assertEqual(reopened.tobytes(), self.image.tobytes())
 
     def test_non_png_formats_skip_png_metadata_work(self):
         self.image.info["parameters"] = "unused for JPEG"
