@@ -128,7 +128,7 @@
         if (!config) return null;
         const selected = selectedNativeButton();
         return featureContainerIds(config).find(function (containerId) {
-            return nativeButtonFor(containerId) === selected;
+            return Boolean(selected) && nativeButtonFor(containerId) === selected;
         }) || featureContainerIds(config).find(function (containerId) {
             return Boolean(nativeButtonFor(containerId));
         }) || null;
@@ -180,6 +180,7 @@
     function syncFeatureButtonState(feature) {
         const row = featureNavigation();
         if (!row) return;
+        row.setAttribute("aria-busy", String(Boolean(activatingFeature)));
         if (feature) {
             row.dataset.activeFeature = feature;
         } else {
@@ -189,8 +190,12 @@
             const button = featureButton(candidate);
             if (!button) return;
             const isActive = candidate === feature;
+            const busy = candidate === activatingFeature;
+            const label = FEATURES[candidate].label + (busy ? " …" : "");
+            if (button.textContent !== label) button.textContent = label;
+            button.setAttribute("aria-busy", String(busy));
             button.classList.toggle("aikimi-feature-active", isActive);
-            if (isActive) {
+            if (isActive && !busy) {
                 button.setAttribute("aria-current", "page");
             } else {
                 button.removeAttribute("aria-current");
@@ -253,14 +258,19 @@
             if (available) availableCount += 1;
         });
         row.hidden = availableCount === 0;
-        syncFeatureButtonState(activeFeature || activatingFeature);
+        syncFeatureButtonState(activatingFeature || activeFeature);
         return true;
     }
 
-    function waitFor(predicate, attempts = 40, delayMs = SETUP_RETRY_DELAY_MS) {
+    function waitFor(predicate, attempts = 40, delayMs = SETUP_RETRY_DELAY_MS, sequence = null) {
         return new Promise(function (resolve) {
             let remaining = attempts;
             function check() {
+                // A superseded click must not wait for or mutate controls on another tab.
+                if (sequence !== null && sequence !== activationSequence) {
+                    resolve(null);
+                    return;
+                }
                 const value = predicate();
                 if (value || remaining <= 0) {
                     resolve(value || null);
@@ -328,12 +338,13 @@
         }));
     }
 
-    async function selectFeaturePreset(feature) {
+    async function selectFeaturePreset(feature, sequence) {
         const config = FEATURES[feature];
         if (!config?.preset) return null;
         const dropdown = await waitFor(function () {
             return appRoot().querySelector("#forge_ui_preset");
-        });
+        }, 40, SETUP_RETRY_DELAY_MS, sequence);
+        if (sequence !== activationSequence) return null;
         if (!dropdown) return `${config.label}のUI Preset欄が見つかりません。UIを再読み込みしてください。`;
 
         const input = dropdown.querySelector("input");
@@ -343,17 +354,20 @@
             openGradioDropdown(input);
             let option = await waitFor(function () {
                 return exactVisibleOption(dropdown, input, config.preset);
-            }, 20);
+            }, 20, SETUP_RETRY_DELAY_MS, sequence);
+            if (sequence !== activationSequence) return null;
             if (!option) {
                 openGradioDropdown(input);
                 option = await waitFor(function () {
                     return exactVisibleOption(dropdown, input, config.preset);
-                }, 40);
+                }, 40, SETUP_RETRY_DELAY_MS, sequence);
             }
+            if (sequence !== activationSequence) return null;
             if (option) activateDropdownOption(option);
             await waitFor(function () {
                 return input.value === config.preset ? input : null;
-            }, 60);
+            }, 60, SETUP_RETRY_DELAY_MS, sequence);
+            if (sequence !== activationSequence) return null;
         }
 
         if (input.value !== config.preset) {
@@ -368,7 +382,7 @@
             : "aikimi-txt2img-anima38";
     }
 
-    async function expandAnimaAccordion(containerId) {
+    async function expandAnimaAccordion(containerId, sequence) {
         const accordionId = animaAccordionId(containerId);
         const controls = await waitFor(function () {
             const accordion = appRoot().querySelector(`#${accordionId}`);
@@ -391,7 +405,8 @@
                 return null;
             }
             return { accordion, label, visibleCheckbox, hiddenCheckbox };
-        }, 60);
+        }, 60, SETUP_RETRY_DELAY_MS, sequence);
+        if (sequence !== activationSequence) return null;
         if (!controls) return "Anima 3.8Bの有効化欄が準備できません。UIを再読み込みしてください。";
 
         inputAccordionChecked(accordionId, true);
@@ -401,11 +416,12 @@
                 controls.hiddenCheckbox.checked
                 ? controls.accordion
                 : null;
-        }, 20);
+        }, 20, SETUP_RETRY_DELAY_MS, sequence);
         return opened ? null : "Anima 3.8Bを有効化できませんでした。設定欄を手動で有効にしてください。";
     }
 
-    async function collapseAnimaAccordion(containerId) {
+    async function collapseAnimaAccordion(containerId, sequence) {
+        if (sequence !== activationSequence) return null;
         const accordionId = animaAccordionId(containerId);
         const accordion = appRoot().querySelector(`#${accordionId}`);
         const visibleCheckbox = appRoot().querySelector(`#${accordionId}-visible-checkbox`);
@@ -425,14 +441,14 @@
                 !hiddenCheckbox.checked
                 ? accordion
                 : null;
-        }, 20);
+        }, 20, SETUP_RETRY_DELAY_MS, sequence);
         return closed ? null : "Anima 3.8Bの設定を無効化できませんでした。設定欄から手動で無効にしてください。";
     }
 
-    async function collapseAnimaAccordions() {
+    async function collapseAnimaAccordions(sequence) {
         const warnings = await Promise.all([
-            collapseAnimaAccordion("tab_txt2img"),
-            collapseAnimaAccordion("tab_img2img"),
+            collapseAnimaAccordion("tab_txt2img", sequence),
+            collapseAnimaAccordion("tab_img2img", sequence),
         ]);
         return warnings.find(Boolean) || null;
     }
@@ -446,7 +462,7 @@
 
     async function activateFeature(feature, sequence) {
         const config = FEATURES[feature];
-        if (!config) return;
+        if (!config || sequence !== activationSequence) return;
 
         activatingFeature = feature;
         syncFeatureButtonState(feature);
@@ -460,31 +476,33 @@
 
         let warning = null;
         if (feature === "krea2") {
-            warning = await collapseAnimaAccordions();
+            warning = await collapseAnimaAccordions(sequence);
         }
-        const presetWarning = await selectFeaturePreset(feature);
+        if (sequence !== activationSequence) return;
+        const presetWarning = await selectFeaturePreset(feature, sequence);
+        if (sequence !== activationSequence) return;
         warning = warning || presetWarning;
         if (feature === "anima38") {
-            warning = warning || await expandAnimaAccordion(containerId);
+            warning = warning || await expandAnimaAccordion(containerId, sequence);
         } else {
             const mounted = await waitFor(function () {
                 return featureContainer(feature);
-            }, 60);
+            }, 60, SETUP_RETRY_DELAY_MS, sequence);
             if (!mounted) {
                 warning = `${config.label}を開けませんでした。UIを再読み込みしてください。`;
             }
         }
 
-        if (sequence !== activationSequence) {
-            if (activatingFeature === feature) activatingFeature = null;
-            return;
-        }
+        if (sequence !== activationSequence) return;
         activatingFeature = null;
         setActiveFeature(feature, warning);
     }
 
     function queueFeatureActivation(feature) {
+        if (activatingFeature === feature) return;
         const sequence = ++activationSequence;
+        activatingFeature = feature;
+        syncFeatureButtonState(feature);
         activationQueue = activationQueue
             .catch(function () {
                 return null;
@@ -657,6 +675,15 @@
     }
 
     function handleUiUpdate(mutationRecords) {
+        const tabs = topTabs();
+        const nav = topTabNav();
+        // Native studios may mount after the feature row. Ordinary progress and
+        // prompt mutations do not require rebuilding availability.
+        if (Array.from(mutationRecords || []).some(function (record) {
+            return record.type === "childList" && (record.target === tabs || record.target === nav);
+        })) {
+            scheduleSetup();
+        }
         repairExternalNavigationOnUiUpdate(mutationRecords);
         scheduleAliasReconciliation();
     }
@@ -669,9 +696,9 @@
     function handleNativeTabClick(event) {
         const button = topNavButtonFromTarget(event.target);
         if (!button) return;
-        if (activatingFeature && selectedButtonMatches(activatingFeature, button)) return;
+        if (!event.isTrusted && activatingFeature && selectedButtonMatches(activatingFeature, button)) return;
         if (
-            activeFeature &&
+            !activatingFeature && activeFeature &&
             FEATURES[activeFeature]?.kind === "alias" &&
             selectedButtonMatches(activeFeature, button)
         ) {
@@ -690,6 +717,13 @@
         }
     }
 
+    function handleManualPresetChange(event) {
+        if (!event.isTrusted || !activatingFeature || !event.target.closest?.("#forge_ui_preset")) return;
+        activationSequence += 1;
+        activatingFeature = null;
+        setActiveFeature(null, null);
+    }
+
     function handleFeatureNavigationClick(event) {
         const button = event.target.closest?.(".aikimi-feature-nav__button");
         if (!button || button.parentElement !== featureNavigation() || button.disabled) return;
@@ -701,6 +735,7 @@
         if (!button || button.parentElement !== featureNavigation() || event.defaultPrevented) return;
         if (event.key === "Enter" || event.key === " ") {
             event.preventDefault();
+            if (event.repeat) return;
             button.click();
             return;
         }
@@ -733,6 +768,8 @@
         },
     });
 
+    document.addEventListener("input", handleManualPresetChange);
+    document.addEventListener("change", handleManualPresetChange);
     document.addEventListener("click", handleNativeTabClick);
     document.addEventListener("click", scheduleAliasReconciliation);
     document.addEventListener("input", scheduleAliasReconciliation);
