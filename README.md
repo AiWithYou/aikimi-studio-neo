@@ -20,7 +20,7 @@
 
 「独自」の対象は、このブランチで追加・改善したソフトウェア部分です。Krea2、Anima、SenseNova、MiniMax H3などのモデル、ComfyUI、基盤ライブラリ、参考技術の出典と利用条件は、それぞれの開発元に従います。各ガイドと[Third-party notices](THIRD_PARTY_NOTICES.md)に参照先を記載しています。
 
-Forge NeoにもKrea2・Animaの基本対応、量子化モデルの読み込み、画像編集・動画生成があります。区分の比較対象は[同期基準時点のForge Neo](https://github.com/Haoming02/sd-webui-forge-classic/tree/0d0cb72951b059c8ea17861ba86db8d0f6098c28)です。上流側の最新機能との比較は、この固定時点から変わる可能性があります。同期情報は[その他](#その他)を参照してください。
+Forge NeoにもKrea2・Animaの基本対応、量子化モデルの読み込み、画像編集・動画生成があります。区分の比較対象は[同期基準時点のForge Neo](https://github.com/Haoming02/sd-webui-forge-classic/tree/0d0cb72951b059c8ea17861ba86db8d0f6098c28)です。ベースの情報は[その他](#その他)を参照してください。
 
 ## 主な機能
 
@@ -28,7 +28,7 @@ Forge NeoにもKrea2・Animaの基本対応、量子化モデルの読み込み�
 |---|---|---|---|
 | **Forge画像生成** | Forge継承 | 通常の`txt2img`、`img2img`、Extras、モデル読み込み。 | モデルごとの条件に従います。 |
 | **Krea2 INT8・高解像度処理** | Forge継承＋独自統合 | ForgeのKrea2対応を利用し、モデル導入手順と4K／8K向けの追加処理を同梱。 | 高解像度処理の一部は実験機能。 |
-| **Anima 3.8B拡張** | Forge継承＋独自統合 | Qwen3.5を使う拡張、v1.1のSemantic Connector v2対応、INT8変換・導入支援を同梱。 | RTX 3090で約1MPの実測記録があります。 |
+| **Anima 3.8B拡張** | Forge継承＋独自統合 | Qwen3.5を使う拡張、v1.1のSemantic Connector v2対応、INT8変換・導入支援を同梱。 | v1／v1.1に対応。導入する版に合ったモデル構成が必要。 |
 | **SenseNova U1.5 Studio** | 独自統合 | テキストからの画像生成、複数画像の編集、別プロセスでの実行を専用画面に統合。 | 対応モデルが必要。24GB Safeは参照2枚・各約512×512、出力2048×2048以下。 |
 | **MiniMax H3 Studio** | 独自統合 | ローカルComfyUIと連携する音声付き動画の専用UI。Turbo・INT8 VAE・Fast Decode・Sparse Attentionの任意設定も用意。 | 実行環境とモデルは別途必要。高速化設定には画質・メモリとのトレードオフがあります。 |
 | **MiniMax H3 Image** | 独自統合・実験機能 | `H3 Image`タブでテキストからの静止画生成と参照画像による編集。PNGと生成条件を保存。 | 標準H3の最小5フレーム構成を使用。実モデルでのGPU画像生成・画質・速度は未検証です。 |
@@ -41,7 +41,7 @@ Forge NeoにもKrea2・Animaの基本対応、量子化モデルの読み込み�
 | **Aikimiナビゲーション・Status** | 独自追加 | 追加機能への入口と、ちびあいきみ・実行環境・待機ジョブ・技術詳細の表示。 | 状態表示はKrea2・Anima・SenseNova・MiniMax H3動画の操作中に限定。 |
 | **Diagnostics** | 独自追加 | Python・PyTorch・CUDA・GPU・ディスク・モデル・公開状態の診断。 | SettingsとAPIからReady／Warning／Blockedを確認可能。 |
 
-**タブが表示されていても、モデルや実行環境の導入が完了しているとは限りません。** 実行可否はDiagnosticsまたは`/aikimi/api/v1/capabilities`で確認してください。未計測の最低VRAMや処理時間は掲載せず、実測条件は各ガイドに記載しています。
+**各モデルを使うには、モデルファイルと実行環境の準備が必要です。** 導入条件は下の機能別ガイド、PC側の準備状況はSettingsのDiagnosticsで確認できます。Grain Cleanerは追加モデルなしで利用可能です。
 
 ### 機能別ガイド
 
@@ -70,13 +70,15 @@ Forge NeoにもKrea2・Animaの基本対応、量子化モデルの読み込み�
 
 操作方法、キャッシュの更新条件、CLIは[Grain Cleanerガイド](docs/grain-cleaner.md)を参照してください。`H3 Image`は静止画専用の独立タブです。上部の`MiniMax H3`ショートカットは動画の`H3 Studio`を開きます。
 
-Forge由来の`txt2img`、`img2img`、`Extras`、`Settings`は、Forge Neoのタブ構成とQuick Settingsを維持します。Gradioが所有するタブ列は変更せず、その直前へAikimi専用の細い1行を置き、`Krea2`、`Anima`、`SenseNova`、`MiniMax H3`を直接選べるようにしています。カード型ランチャーや別ダッシュボードは追加しません。
+通常の`txt2img`、`img2img`、`Extras`、`Settings`に加え、画面上部から追加機能を開けます。
 
-- `Krea2`はUI Presetの`krea`を選択するaliasです。現在のForgeタブが`txt2img`または`img2img`ならそのタブを維持し、別のタブから開いた場合は`txt2img`へ移動します。`Krea2 2-Stage Upscale`は自動選択しません。
-- `Anima`はUI Presetの`anima`を選択するaliasです。現在のForgeタブが`txt2img`または`img2img`ならそのタブを維持し、別のタブから開いた場合は`txt2img`へ移動した上で、選択したタブの`Anima 3.8B`設定欄を展開します。
-- `SenseNova`と`MiniMax H3`は、専用Studioタブとして直接開きます。
+- **Krea2**：画像生成用のPreset`krea`への切り替え。
+- **Anima**：Preset`anima`への切り替えと、専用設定欄の表示。
+- **SenseNova・MiniMax H3**：それぞれの専用Studioの表示。
 
-ちびあいきみは、4つのAikimi入口を開いている間だけ操作領域の先頭へ表示され、折りたたみ時は高さ64px以下の状態欄でRuntime、Backend、Queue、進捗、展開可能な技術詳細を示します。通常のForgeタブでは表示と状態取得を停止します。従来の全画面共通ヘッダーと固定オーバーレイは廃止しました。
+Krea2・Animaを選んでも、操作中の`txt2img`／`img2img`タブは維持されます。他のタブから選んだ場合は`txt2img`へ移動します。
+
+追加機能を利用している間は、ちびあいきみが実行状態や待機ジョブを表示します。詳細情報は展開して確認でき、通常のForge画面へ戻ると状態表示も閉じます。
 
 </details>
 
@@ -104,52 +106,38 @@ cd sd-webui-forge_neo_Aikimi
 
 `aikimi-launch.bat`をダブルクリックした場合も、`LocalSafe`で起動します。起動後に<http://127.0.0.1:7861>を開いてください。
 
-Local Safeは次を有効にします。
-
-- WebUIとAPIを`127.0.0.1`へbind
-- Gradio share、ngrok、LAN公開を無効化
-- dark theme、BnB、tiled Conv2d、cudaMallocAsync
-- `forge_neo_model_paths.yaml`がある場合だけ共有model pathを追加
-
-初回起動は依存関係を導入します。現在のlauncher既定はPyTorch`2.11.0+cu130`とtorchvision`0.26.0+cu130`です。通常は対応NVIDIA driverと、launcherが導入するPyTorch wheelを使います。追加CUDA Toolkitの要否はcustom extensionごとに確認してください。
+`LocalSafe`は自分のPC内だけで利用する通常起動です。初回は必要なライブラリを自動導入します。既定のPyTorchは`2.11.0+cu130`、torchvisionは`0.26.0+cu130`なので、対応するNVIDIAドライバーを用意してください。
 
 <a id="model-setup"></a>
 
 ### モデルの導入
 
-モデル、VAE、テキストエンコーダー、LoRAはリポジトリに含みません。使いたいモデルの`install`コマンドだけを実行してください。すべてを導入する必要はありません。統一CLIは固定revision、size、SHA-256を検査し、`.part`から再開します。
+使いたいモデルのコマンドだけを実行してください。モデル本体・VAE・テキストエンコーダー・LoRAは、このリポジトリとは別に導入します。
 
-```powershell
-python .\tools\aikimi_setup.py list
-python .\tools\aikimi_setup.py install krea2
-python .\tools\aikimi_setup.py install anima38
-python .\tools\aikimi_setup.py install sensenova
-python .\tools\aikimi_setup.py verify
-python .\tools\aikimi_setup.py repair anima38 --dry-run
-```
+| モデル | 導入コマンド |
+|---|---|
+| Krea2 | `python .\tools\aikimi_setup.py install krea2` |
+| Anima 3.8B v1.1 | `python .\tools\aikimi_setup.py install anima38` |
+| SenseNova U1.5 | `python .\tools\aikimi_setup.py install sensenova` |
 
-`--dry-run`はfilesystemとnetworkを変更しません。`--json`を付けると、相対pathと結果をJSONで返します。現在の固定artifactはpublicで、tokenを必要としません。tokenをcommandやURL queryへ書かないでください。
+中断したダウンロードは再開でき、取得したファイルも検証します。Animaの変換にはNVIDIA GPUと初回起動で作成される仮想環境が必要なので、先に通常起動を済ませてください。
 
-| profile | 最終配置または一時peak | 注意 |
-|---|---:|---|
-| Krea2 | 約17.68 GiB | checkpoint、Qwen3-VL、VAE |
-| Anima 3.8B v1.1 | v1.1用batの一時peak約17.82 GiB | 共通encoderとVAEも新規導入するCLIは約19.16 GiB |
-| SenseNova U1.5 | 最終約17.28 GiB | 既存並列PowerShell installerの一時peakは約33.79 GiB |
+<details>
+<summary>batファイルから導入する場合</summary>
 
-表の容量に加えて、ファイルシステムと更新用の空き容量も確保してください。Anima変換にはCUDA device 0と準備済みForge venvが必要です。先に通常起動で依存関係を導入してください。
-
-既存のbatも互換入口として残します。
+次のファイルを、ダウンロードしたフォルダーから実行する方法も使えます。
 
 ```text
 download_krea2_int8_convrot_models.bat
 download_anima38_v11_int8_convrot_models.bat
-download_anima38_int8_convrot_models.bat
 download_sensenova_u15_int8.bat
 ```
 
-Animaの旧ファイル名はv1用です。新規導入ではv1.1用batまたは統一CLIを使います。
+Animaを新しく導入する場合は、v1.1用のファイルを選んでください。
 
-詳しい固定値、repair、licenseは[Model installation](docs/model-installation.md)を参照してください。
+</details>
+
+必要な空き容量、導入状況の確認、ファイルの修復は[モデル導入ガイド](docs/model-installation.md)にまとめています。
 
 MiniMax H3の実行環境とモデルの準備は、[MiniMax H3 Studioガイド](extensions-builtin/minimax-h3-studio/README.md)を参照してください。
 
@@ -157,24 +145,20 @@ MiniMax H3の実行環境とモデルの準備は、[MiniMax H3 Studioガイド]
 
 ### 起動プロファイル
 
-通常は`LocalSafe`を使います。必要に応じて、起動時のプロファイルを変更してください。
+通常は`LocalSafe`を使います。別の設定で起動する場合は、`-Profile`の後を次の表から選んでください。
 
 ```powershell
 .\aikimi-launch.ps1 -Profile LocalSafe
-.\aikimi-launch.ps1 -Profile LocalAPI
-.\aikimi-launch.ps1 -Profile Development
-.\aikimi-launch.ps1 -Profile LowVRAM
-.\aikimi-launch.ps1 -Profile RTX3090Recommended
 ```
 
-| profile | 用途 | 公開範囲 |
+| 起動設定 | 用途 | 接続できる範囲 |
 |---|---|---|
-| `LocalSafe` | 通常のWebUIとAPI | loopbackのみ |
-| `LocalAPI` | APIだけを起動 | loopbackのみ |
-| `Development` | UI debug | loopbackのみ |
-| `LowVRAM` | 低VRAM向け | loopbackのみ |
-| `RTX3090Recommended` | RTX 3090向け既定 | loopbackのみ |
-| `LANAuthenticated` | 認証付きLAN利用 | 明示的なremote opt-in |
+| `LocalSafe` | 通常のWebUIとAPI | 自分のPC内 |
+| `LocalAPI` | APIだけを起動 | 自分のPC内 |
+| `Development` | 開発・画面確認用 | 自分のPC内 |
+| `LowVRAM` | GPUメモリが少ない環境向け | 自分のPC内 |
+| `RTX3090Recommended` | RTX 3090向け | 自分のPC内 |
+| `LANAuthenticated` | 認証付きでLAN内の別端末から利用 | 認証必須。接続範囲はネットワーク設定による |
 
 #### 認証付きLAN利用
 
@@ -197,13 +181,11 @@ Basic認証だけでインターネットへ直接公開しないでください
 
 ### `webui-user.bat`のローカル設定
 
-既存更新との互換を保つため、今回のreleaseでは`webui-user.bat`を追跡済みのthin wrapperとして残します。個人設定はGit管理外の`webui-user.local.bat`へ置き、認証値は書かないでください。秘密なしの例からlocal fileを作成できます。
+`webui-user.bat`で起動オプションを変更する場合は、設定例をコピーして`webui-user.local.bat`を作成し、そちらを編集してください。この個人用ファイルはGitの管理対象から除外されています。
 
 ```powershell
 Copy-Item .\webui-user.example.bat .\webui-user.local.bat
 ```
-
-次のmajor releaseでは、移行状況を確認したうえで`webui-user.bat`の追跡解除を検討します。
 
 ## その他
 
@@ -220,7 +202,7 @@ Copy-Item .\webui-user.example.bat .\webui-user.local.bat
 
 ### DiagnosticsとAPI
 
-`Settings`のDiagnosticsはlocal checkだけを実行し、model downloadや生成を始めません。read-only APIは次です。
+SettingsのDiagnosticsで、PCやモデルの準備状況を確認できます。状態をAPIから取得する場合は、次の読み取り専用URLを使います。
 
 ```text
 GET /aikimi/api/v1/health
@@ -228,75 +210,41 @@ GET /aikimi/api/v1/status
 GET /aikimi/api/v1/capabilities
 ```
 
-Local Safeでの確認例:
+`LocalSafe`での確認例：
 
 ```powershell
 Invoke-RestMethod http://127.0.0.1:7861/aikimi/api/v1/health
 Invoke-RestMethod http://127.0.0.1:7861/aikimi/api/v1/capabilities
 ```
 
-remote modeでは認証が必要です。APIはtoken、password、認証file path、機密性が高い絶対pathを返しません。
+LANなどの別端末から利用する場合は認証が必要です。認証情報や機密性の高いファイルパスは、APIの応答から除外します。
 
 <a id="update"></a>
 
 ### 更新方法
 
-通常利用者はAikimi Neoの`neo`をfast-forwardで更新します。
+WebUIを終了し、Aikimi NeoをダウンロードしたフォルダーでPowerShellを開いて、次を実行してください。このリポジトリの`neo`ブランチを最新版に更新します。
 
 ```powershell
 git switch neo
-git pull --ff-only
+git pull --ff-only origin neo
 ```
 
-model、output、secret、`webui-user.local.bat`はGit管理外です。更新前に`git status`を確認し、追跡fileへ書いた個人設定を退避してください。
-
-Forge Neo upstreamとの同期はmaintainer作業です。
-
-```powershell
-git remote add upstream https://github.com/Haoming02/sd-webui-forge-classic.git
-git fetch upstream neo
-```
-
-同期では、Aikimiのsecurity guard、BnB／NF4／GGUF互換、Anima、SenseNova、MiniMax H3、高解像度workflowを個別に検証します。詳しくは[CONTRIBUTING.md](CONTRIBUTING.md)を参照してください。
+更新が終わったら、`aikimi-launch.bat`をダブルクリックするか、普段使っている起動コマンドでWebUIを起動してください。導入済みのモデルや保存した画像を、ダウンロードし直す必要はありません。
 
 <a id="test"></a>
 
-### テスト
+### 開発・テスト
 
-通常のCI相当testは、CPU、offline、外部model downloadなしで動きます。
-
-```powershell
-uv pip install --python .\venv\Scripts\python.exe -r tools\requirements-test.txt
-.\venv\Scripts\python.exe .\tools\run_ci_tests.py --verbosity 1
-```
-
-setup CLIだけを短く確認する場合:
-
-```powershell
-.\venv\Scripts\python.exe -m unittest -v tools.tests.test_aikimi_setup
-.\venv\Scripts\python.exe -m ruff check tools\aikimi_setup.py tools\tests\test_aikimi_setup.py
-.\venv\Scripts\python.exe -m ruff format --check tools\aikimi_setup.py tools\tests\test_aikimi_setup.py
-```
-
-CIは用途別に、lint、unit tests、Windows smoke、installer、secret scan、dependency audit、CodeQL、dependency reviewを実行します。GPU live testは通常testと分け、未実施の機能を成功扱いしません。release前の全gateは[Release checklist](docs/release-checklist.md)にあります。
-
-### 既存の動作確認記録
-
-2026-09-07のExtras改善（機能実装コミット[`6344db40`](https://github.com/AiWithYou/sd-webui-forge_neo_Aikimi/commit/6344db40a095435dafc6fb059a832f13809bcb4f)）では、GitHubのCPUテスト1158件、Windowsの選択テスト342件、実WebUIのChromiumテスト2件が失敗なしで終了しました。CPUは43件、Windowsは1件をスキップし、それぞれ既知の失敗扱いが1件あります。
-
-Grain Cleanerの改修前後を1024×1536画像で比較した結果は、補正画像と4種類の診断画像のいずれも全画素で差分0でした。同じ画像で強度だけ変えた再実行は、CPUで約1.97秒から0.66秒になっています。これは1画像での測定例です。対象画像全体の画質評価や、追加したH3静止画モードの実モデル生成を確認した結果には含めません。
-
-Windows、Python 3.13、Gradio 6.17.3の実WebUIをChromeで開き、Krea2が`txt2img`と`img2img`の現在位置を維持し、他タブからだけ`txt2img`へ戻ることを確認しています。両モードのLora検索、Preset表示、選択中のForgeタブ表示も確認し、ページ由来のconsole errorはありませんでした。
-
-Forge Neo 2.29の取り込みと依存更新では、CPU回帰テストに加え、RTX 3090でKrea2の`txt2img`／`img2img`、Anima 3.8B v1、Anima 3.8B v1.1の実生成まで確認しています。Anima v1.1はPreset条件の512×512、32 steps、ER SDEで、Semantic Connector v2を含む非空の正常画像を確認しました。ここでの結果を、未計測modelの速度や画質へ一般化しません。
+コードを変更する場合の環境構築とテスト手順は[開発ガイド](CONTRIBUTING.md)を参照してください。
 
 <a id="troubleshooting"></a>
 
 ### トラブルシューティング
 
-起動、remote auth、CUDA、model setup、SenseNova、MiniMax H3の確認手順は[Troubleshooting](docs/troubleshooting.md)にあります。
+起動できない、モデルを読み込めない、認証で接続できないといった場合は[トラブルシューティング](docs/troubleshooting.md)を確認してください。SenseNovaとMiniMax H3の対処手順も記載しています。
 
-logやsysinfoを共有する前に、認証情報、URL query、絶対path、prompt、入力basenameを目視してください。自動redactionだけで安全を保証できません。
+ログや環境情報を共有する際は、パスワード、個人用のフォルダーパス、プロンプトなどが含まれていないか確認してください。
 
 <a id="documentation"></a>
 
@@ -315,8 +263,6 @@ logやsysinfoを共有する前に、認証情報、URL query、絶対path、pro
 
 ### ライセンスと配布条件
 
-codeは[AGPL-3.0](LICENSE)です。nested directoryに別licenseがある場合は、そのcopyright noticeと条件を保持します。
+コードのライセンスは[AGPL-3.0](LICENSE)です。個別のライセンスがあるライブラリや素材は、それぞれの条件に従ってください。
 
-model、VAE、text encoder、LoRA、font、画像asset、生成物には別条件が適用される場合があります。特にKrea2、Anima、SenseNova、MiniMax H3の条件は利用時点の配布元で確認してください。
-
-`assets/aikimi`の由来、権利保有者、再配布条件は、監査時点のリポジトリだけでは確認できません。権利を推測して断定せず、第三者向けrelease前にasset noticeを整備します。確認済みの出典と未解決項目は[Third-party notices](THIRD_PARTY_NOTICES.md)に記録しています。
+モデル・VAE・テキストエンコーダー・LoRAなどの利用条件は各配布元で確認できます。出典と個別のライセンス情報は、各機能のガイドと[Third-party notices](THIRD_PARTY_NOTICES.md)を参照してください。
