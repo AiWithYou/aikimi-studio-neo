@@ -9,25 +9,14 @@ permissions:
   contents: read
 
 jobs:
-  snapshot:
+  lint-tool:
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
-        with:
-          ref: e94685e988ee7ad23d55a4d7ff64b689dec7858e
-          fetch-depth: 80
-          persist-credentials: false
-      - name: Package public source and recent history
-        run: |
-          git archive --format=tar HEAD > "$RUNNER_TEMP/source.tar"
-          git log -80 --format=fuller --stat > "$RUNNER_TEMP/history.txt"
-          git ls-tree -r HEAD > "$RUNNER_TEMP/tree.txt"
+      - name: Download the repository-pinned lint wheel
+        run: python -m pip download --only-binary=:all: --no-deps --dest "$RUNNER_TEMP/lint-tools" ruff==0.15.20
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
-          name: repository-audit-source
+          name: repository-audit-tools
           retention-days: 1
-          path: |
-            ${{ runner.temp }}/source.tar
-            ${{ runner.temp }}/history.txt
-            ${{ runner.temp }}/tree.txt
+          path: ${{ runner.temp }}/lint-tools/*.whl
