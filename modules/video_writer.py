@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import math
 import os
+import stat
 import subprocess
 import tempfile
 from collections.abc import Iterable
@@ -60,9 +61,10 @@ def write_video(
     height, width, _ = first.shape
     shape = first.shape
     target = Path(filename)
-    descriptor, name = tempfile.mkstemp(prefix=".aikimi-video-", suffix=target.suffix, dir=target.parent)
-    os.close(descriptor)
-    temporary = Path(name)
+    # Let FFmpeg create the file with the process umask, inside a private sibling
+    # directory. Precreating it with mkstemp would publish owner-only videos.
+    temporary_directory = tempfile.TemporaryDirectory(prefix=".aikimi-video-", dir=target.parent)
+    temporary = Path(temporary_directory.name) / f"output{target.suffix}"
     process = None
     try:
         command = [
@@ -111,8 +113,15 @@ def write_video(
         returncode = process.wait()
         if returncode != 0:
             raise VideoEncodingError(f"FFmpeg failed with exit code {returncode}; no video was published")
-        if temporary.stat().st_size == 0:
+        if not temporary.is_file() or temporary.stat().st_size == 0:
             raise VideoEncodingError("FFmpeg produced an empty output; no video was published")
+        try:
+            mode = stat.S_IMODE(target.stat().st_mode)
+        except FileNotFoundError:
+            # New outputs retain FFmpeg's normal umask-derived permissions.
+            pass
+        else:
+            os.chmod(temporary, mode)
         os.replace(temporary, target)
     except BrokenPipeError as exc:
         raise VideoEncodingError("FFmpeg stopped accepting frames; no video was published") from exc
@@ -126,4 +135,4 @@ def write_video(
                     process.stdin.close()
                 process.wait()
         finally:
-            temporary.unlink(missing_ok=True)
+            temporary_directory.cleanup()
