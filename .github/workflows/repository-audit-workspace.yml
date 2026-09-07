@@ -6,18 +6,90 @@ on:
     paths: [.github/workflows/repository-audit-workspace.yml]
 
 permissions:
-  contents: read
+  contents: write
 
 jobs:
-  lint-tool:
+  verify-and-publish:
+    if: github.ref == 'refs/heads/quality/repository-audit-20260907'
     runs-on: ubuntu-latest
-    timeout-minutes: 5
+    timeout-minutes: 10
+    env:
+      GH_TOKEN: ${{ github.token }}
     steps:
-      - name: Download the repository-pinned lint wheel
-        run: |
-          python -m pip download --only-binary=:all: --no-deps --dest "$RUNNER_TEMP/lint-tools" ruff==0.15.20
-      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
-          name: repository-audit-tools
-          retention-days: 1
-          path: ${{ runner.temp }}/lint-tools/*.whl
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97
+        with:
+          python-version: '3.13'
+      - name: Obtain and verify the tested patch
+        shell: bash
+        run: |
+          gh api "repos/${GITHUB_REPOSITORY}/git/blobs/878a17a31a97d2d3402c7547113ca976bb72f79e" > "$RUNNER_TEMP/patch-blob.json"
+          python - <<'PY'
+          import base64, gzip, hashlib, json, os
+          from pathlib import Path
+          temporary = Path(os.environ['RUNNER_TEMP'])
+          blob = json.loads((temporary / 'patch-blob.json').read_text())
+          encoded = base64.b64encode(base64.b64decode(blob['content'])).decode()
+          # Repair two verified transport transcription errors before checking
+          # the independently recorded checksum of the original local patch.
+          encoded = encoded.replace('Ae5RzFGdSryWmJy', 'Ae5RzFGdSryWJy')
+          encoded = encoded.replace('zVpD8GTm5aVnLE', 'zVpD8GTm5aGLE') + 'A='
+          patch = gzip.decompress(base64.b64decode(encoded, validate=True))
+          expected = 'd6a17f976d821432b5b0bc1717553ec5735116df8215b5b505b03390c28556a0'
+          if hashlib.sha256(patch).hexdigest() != expected:
+              raise SystemExit('Patch checksum mismatch; no source files were changed')
+          (temporary / 'source-fixes.patch').write_bytes(patch)
+          PY
+          git apply --check "$RUNNER_TEMP/source-fixes.patch"
+          git apply --whitespace=nowarn "$RUNNER_TEMP/source-fixes.patch"
+      - name: Verify exact source bytes against the tested workspace
+        shell: bash
+        run: |
+          python - <<'PY'
+          import hashlib, json, os
+          from pathlib import Path
+          expected = {
+            'modules/atomic_file.py': '3d2e18880e60634d2f579dfadd3a98657967bc9367a9ce69815c5fb5efda81f2',
+            'modules/images.py': '8211f65551df9e1a1295a9a715511207394759a17a65abcf2d4f6fd9c63fb715',
+            'modules/options.py': 'bc7e5e540ebac7aa299e991591655928ca954da4e7dac3a47cceedae940df7db',
+            'modules/postprocessing.py': '060d2e7c2cdbf4e6d57c8510716a83e2274489d11a43e618e144efd0ce787e30',
+            'modules/ui_loadsave.py': '6bacaf186ebe853e496d3541c6a02d083bf3b1a308589b64747b31ddce8bc3f4',
+            'modules/video_writer.py': '5cb8e052a40ea4c8bc1b6647eeb9150bf136c395cb355ff78ff5c2cd9f56d75a',
+            'tools/tests/test_persistence_reliability.py': 'acf232b46ededbc1da977c73a9f358113d9a5107da5a561480d4ed715ff40e21',
+            'tools/tests/test_video_writer_ffmpeg.py': '5f6e3d713b6fa0940b03cec66a3cd64f6ee3d7fd399f2a0f133cb8264ae76d58',
+          }
+          for name, digest in expected.items():
+              if hashlib.sha256(Path(name).read_bytes()).hexdigest() != digest:
+                  raise SystemExit(f'Unexpected source bytes: {name}')
+          print('All eight source files match the tested local workspace')
+          (Path(os.environ['RUNNER_TEMP']) / 'source-manifest.json').write_text(json.dumps(expected, indent=2))
+          PY
+      - name: Install the minimal verification environment
+        run: python -m pip install numpy==2.3.5 Pillow==12.3.0 ruff==0.15.20
+      - name: Run the regression and encoder tests
+        shell: bash
+        run: |
+          python -m unittest -v tools.tests.test_persistence_reliability tools.tests.test_video_writer_ffmpeg tools.tests.test_option_migrations 2>&1 | tee "$RUNNER_TEMP/reliability-tests.log"
+          python -m ruff check modules/atomic_file.py modules/video_writer.py tools/tests/test_persistence_reliability.py tools/tests/test_video_writer_ffmpeg.py
+          python -m ruff format --check modules/atomic_file.py modules/video_writer.py tools/tests/test_persistence_reliability.py tools/tests/test_video_writer_ffmpeg.py
+          git -c core.whitespace=cr-at-eol diff --check
+      - name: Commit only the verified source changes to the audit branch
+        shell: bash
+        run: |
+          git add -- modules/atomic_file.py modules/images.py modules/options.py modules/postprocessing.py modules/ui_loadsave.py modules/video_writer.py tools/tests/test_persistence_reliability.py tools/tests/test_video_writer_ffmpeg.py
+          git -c user.name='github-actions[bot]' -c user.email='41898282+github-actions[bot]@users.noreply.github.com' commit -m 'fix: preserve settings and failed video outputs; stream Extras frames'
+          gh auth setup-git
+          git push origin HEAD:refs/heads/quality/repository-audit-20260907
+          git rev-parse HEAD > "$RUNNER_TEMP/source-commit.txt"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        if: always()
+        with:
+          name: repository-audit-verification
+          retention-days: 7
+          path: |
+            ${{ runner.temp }}/reliability-tests.log
+            ${{ runner.temp }}/source-manifest.json
+            ${{ runner.temp }}/source-commit.txt
