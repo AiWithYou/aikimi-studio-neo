@@ -14,7 +14,8 @@ jobs:
     timeout-minutes: 5
     steps:
       - name: Download the repository-pinned lint wheel
-        run: python -m pip download --only-binary=:all: --no-deps --dest "$RUNNER_TEMP/lint-tools" ruff==0.15.20
+        run: |
+          python -m pip download --only-binary=:all: --no-deps --dest "$RUNNER_TEMP/lint-tools" ruff==0.15.20
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
           name: repository-audit-tools
