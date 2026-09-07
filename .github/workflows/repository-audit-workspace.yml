@@ -1,0 +1,33 @@
+name: Temporary audit workspace
+
+on:
+  push:
+    branches: [quality/repository-audit-20260907]
+    paths: [.github/workflows/repository-audit-workspace.yml]
+
+permissions:
+  contents: read
+
+jobs:
+  snapshot:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: e94685e988ee7ad23d55a4d7ff64b689dec7858e
+          fetch-depth: 80
+          persist-credentials: false
+      - name: Package public source and recent history
+        run: |
+          git archive --format=tar HEAD > "$RUNNER_TEMP/source.tar"
+          git log -80 --format=fuller --stat > "$RUNNER_TEMP/history.txt"
+          git ls-tree -r HEAD > "$RUNNER_TEMP/tree.txt"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: repository-audit-source
+          retention-days: 1
+          path: |
+            ${{ runner.temp }}/source.tar
+            ${{ runner.temp }}/history.txt
+            ${{ runner.temp }}/tree.txt
