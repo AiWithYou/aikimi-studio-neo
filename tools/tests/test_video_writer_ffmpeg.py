@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import shutil
+import stat
 import subprocess
 import tempfile
 import unittest
@@ -23,10 +24,20 @@ class VideoWriterIntegrationTests(unittest.TestCase):
     def test_stream_and_list_have_identical_decoded_frames_and_rational_rate(self):
         with tempfile.TemporaryDirectory() as directory:
             frames = [np.full((24, 32, 3), value * 30, dtype=np.uint8) for value in range(8)]
+            permission_reference = Path(directory) / "permissions-reference"
+            permission_reference.write_bytes(b"reference")
+            default_mode = stat.S_IMODE(permission_reference.stat().st_mode)
+            permission_reference.unlink()
             decoded = []
             for name, source in (("list", frames), ("stream", iter(frames))):
                 path = Path(directory) / f"{name}.mp4"
+                expected_mode = default_mode
+                if name == "stream":
+                    path.write_bytes(b"existing video")
+                    path.chmod(0o640)
+                    expected_mode = stat.S_IMODE(path.stat().st_mode)
                 write_video(path, source, Fraction(30000, 1001), preset="ultrafast", info="seed: 123")
+                self.assertEqual(stat.S_IMODE(path.stat().st_mode), expected_mode)
                 probe = subprocess.run(  # noqa: S603 - resolved executable and temporary test paths
                     [FFPROBE, "-v", "error", "-show_streams", "-show_format", "-of", "json", str(path)],
                     check=True,
