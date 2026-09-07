@@ -9,7 +9,6 @@ import math
 import os
 import re
 import string
-import subprocess
 import time
 from collections import namedtuple
 
@@ -911,9 +910,9 @@ def fix_png_transparency(image: Image.Image):
     return image
 
 
-def save_video(p, frames: list[np.ndarray], fps: int = 16, *, basename: str = "", info: str = None, audio_copy: os.PathLike = None) -> str:
-    height, width, channels = frames[0].shape
-    assert channels == 3, "Frames must be in (H, W, 3) RGB format"
+def save_video(p, frames, fps=16, *, basename: str = "", info: str = None, audio_copy: os.PathLike = None) -> str:
+    from modules.atomic_file import atomic_write_text
+    from modules.video_writer import write_video
 
     folder = opts.outdir_samples or opts.outdir_videos
     extension = opts.video_container
@@ -939,72 +938,17 @@ def save_video(p, frames: list[np.ndarray], fps: int = 16, *, basename: str = ""
             fullfn = os.path.join(folder, f"{fn}{file_decoration}.{extension}")
             if not os.path.exists(fullfn):
                 break
+        else:
+            raise FileExistsError("Could not allocate a unique video filename")
     else:
         fullfn = os.path.join(folder, f"{file_decoration}.{extension}")
 
-    crf = int(opts.video_crf)
-    preset = str(opts.video_preset)
-    profile = str(opts.video_profile)
-
-    cmd = [
-        "ffmpeg",
-        "-hide_banner",
-        "-loglevel",
-        "error",
-        "-hwaccel",
-        "auto",
-        "-y",
-        "-f",
-        "rawvideo",
-        "-vcodec",
-        "rawvideo",
-        "-pix_fmt",
-        "rgb24",
-        "-s",
-        f"{width}x{height}",
-        "-r",
-        str(fps),
-        "-i",
-        "-",
-    ]
-
-    if audio_copy is not None:
-        cmd += [
-            "-i",
-            audio_copy,
-            "-map",
-            "0:v",
-            "-map",
-            "1:a?",
-            "-acodec",
-            "copy",
-        ]
-
-    cmd += [
-        "-vcodec",
-        "h264",
-        "-crf",
-        str(crf),
-        "-preset",
-        str(preset),
-        "-pix_fmt",
-        "yuv420p",
-        "-profile:v",
-        profile,
-        "-metadata",
-        f"description={str(info)}",
-        fullfn,
-    ]
-
-    proc = subprocess.Popen(cmd, stdin=subprocess.PIPE)
-    for frame in frames:
-        proc.stdin.write(frame.tobytes())
-    proc.stdin.close()
-    proc.wait()
+    write_video(
+        fullfn, frames, fps=fps, crf=int(opts.video_crf), preset=str(opts.video_preset),
+        profile=str(opts.video_profile), info=info, audio_copy=audio_copy,
+    )
 
     if opts.save_txt and info is not None:
-        txt_fullfn = os.path.join(folder, f"{file_decoration}.txt")
-        with open(txt_fullfn, "w", encoding="utf8") as file:
-            file.write(f"{info}\n")
+        atomic_write_text(os.path.splitext(fullfn)[0] + ".txt", f"{info}\n")
 
     return fullfn

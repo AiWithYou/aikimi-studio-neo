@@ -1,4 +1,6 @@
 import os
+from contextlib import contextmanager
+from itertools import chain
 
 import av
 import numpy as np
@@ -10,11 +12,21 @@ from modules.extras_workflow import result_html
 from modules.shared import opts
 
 
-def run_postprocessing(extras_mode, image, image_folder, input_dir, output_dir, show_extras_results, _, *args, save_output: bool = True):
+@contextmanager
+def _extras_job():
     devices.torch_gc()
-
     shared.state.begin(job="extras")
+    try:
+        yield
+    finally:
+        try:
+            shared.state.end()
+        finally:
+            devices.torch_gc()
 
+
+@_extras_job()
+def run_postprocessing(extras_mode, image, image_folder, input_dir, output_dir, show_extras_results, _, *args, save_output: bool = True):
     outputs = []
 
     if isinstance(image, dict):
@@ -24,10 +36,10 @@ def run_postprocessing(extras_mode, image, image_folder, input_dir, output_dir, 
         if extras_mode == 1:
             for img in image_folder:
                 if isinstance(img, Image.Image):
-                    image = images.fix_image(img)
+                    image = img
                     fn = ""
                 else:
-                    image = images.read(os.path.abspath(img.name))
+                    image = os.path.abspath(img.name)
                     fn = os.path.splitext(img.name)[0]
                 yield image, fn
         elif extras_mode == 2:
@@ -66,9 +78,11 @@ def run_postprocessing(extras_mode, image, image_folder, input_dir, output_dir, 
             try:
                 image_data = images.read(image_placeholder)
             except Exception:
+                if extras_mode != 2:
+                    raise
                 continue
         else:
-            image_data = image_placeholder
+            image_data = images.fix_image(image_placeholder) if extras_mode == 1 else image_placeholder
 
         image_data = image_data if image_data.mode in ("RGBA", "RGB") else image_data.convert("RGB")
 
@@ -108,68 +122,72 @@ def run_postprocessing(extras_mode, image, image_folder, input_dir, output_dir, 
             if extras_mode != 2 or show_extras_results:
                 outputs.append(pp.image)
 
-    devices.torch_gc()
-    shared.state.end()
     return outputs, result_html(display_info), ""
 
 
+@_extras_job()
 def run_postprocessing_video(_mode, _img, _folder, _in_dir, _out_dir, _show, video_input, *args, save_output: bool = True):
-    devices.torch_gc()
-
-    shared.state.begin(job="extras")
+    from modules.video_writer import VideoEncodingCancelled
 
     outputs: list[np.ndarray] = []
-
+    infotext = ""
     container = av.open(video_input)
+    try:
+        video_stream = container.streams.best("video")
+        if video_stream is None:
+            raise ValueError("The input file does not contain a video stream")
+        frames = video_stream.frames
+        shared.state.job_count = frames
 
-    video_stream = container.streams.best("video")
-    frames = video_stream.frames
+        def processed_frames():
+            nonlocal infotext
+            for i, frame in enumerate(tqdm(container.decode(video_stream), desc="Processing Video", total=frames, unit="frame")):
+                shared.state.nextjob()
+                shared.state.textinfo = str(i)
+                shared.state.skipped = False
+                if shared.state.interrupted or shared.state.stopping_generation:
+                    raise VideoEncodingCancelled()
+                initial_pp = scripts_postprocessing.PostprocessedImage(frame.to_image())
+                scripts.scripts_postproc.run(initial_pp, args)
+                if shared.state.interrupted or shared.state.stopping_generation:
+                    raise VideoEncodingCancelled()
+                if shared.state.skipped:
+                    continue
+                if not outputs:
+                    infotext = ", ".join([k if k == v else f"{k}: {infotext_utils.quote(v)}" for k, v in initial_pp.info.items() if v is not None])
+                shared.state.assign_current_image(initial_pp.image)
+                output = np.array(initial_pp.image, dtype=np.uint8)
+                outputs[:] = [output]
+                yield output
+            if shared.state.interrupted or shared.state.stopping_generation:
+                raise VideoEncodingCancelled()
 
-    def get_frames():
-        for frame in tqdm(container.decode(video=0), desc="Processing Video", total=frames, unit="frame"):
-            yield frame.to_image()
-
-    infotext = None
-
-    shared.state.job_count = frames
-
-    for i, image_data in enumerate(get_frames()):
-
-        shared.state.nextjob()
-        shared.state.textinfo = str(i)
-        shared.state.skipped = False
-
-        if shared.state.interrupted or shared.state.stopping_generation:
-            break
-
-        initial_pp = scripts_postprocessing.PostprocessedImage(image_data)
-
-        scripts.scripts_postproc.run(initial_pp, args)
-
-        if shared.state.skipped:
-            continue
-
-        if infotext is None:
-            infotext = ", ".join([k if k == v else f"{k}: {infotext_utils.quote(v)}" for k, v in initial_pp.info.items() if v is not None])
-
-        shared.state.assign_current_image(initial_pp.image)
-
-        outputs.append(np.array(initial_pp.image, dtype=np.uint8))
-
-    if not (shared.state.interrupted or shared.state.stopping_generation):
-        images.save_video(
-            os.path.splitext(os.path.basename(video_input))[0],
-            outputs,
-            fps=round(float(container.streams.video[0].average_rate)),
-            basename=None,
-            info=infotext,
-            audio_copy=video_input,
-        )
-
-    container.close()
-    devices.torch_gc()
-    shared.state.end()
-    return outputs[-1:], ui_common.plaintext_to_html(infotext), ""
+        processed = processed_frames()
+        try:
+            first = next(processed, None)
+            if first is not None:
+                if save_output:
+                    rate = video_stream.average_rate
+                    if rate is None:
+                        raise ValueError("The input video does not declare an average frame rate")
+                    images.save_video(
+                        os.path.splitext(os.path.basename(video_input))[0],
+                        chain((first,), processed),
+                        fps=rate,
+                        basename=None,
+                        info=infotext,
+                        audio_copy=video_input,
+                    )
+                else:
+                    for _frame in processed:
+                        pass
+        except VideoEncodingCancelled:
+            pass
+        finally:
+            processed.close()
+    finally:
+        container.close()
+    return outputs, ui_common.plaintext_to_html(infotext), ""
 
 
 def run_postprocessing_webui(id_task, *args, **kwargs):

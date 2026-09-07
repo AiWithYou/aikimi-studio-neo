@@ -160,8 +160,9 @@ class UiLoadsave:
             return json.load(file)
 
     def write_to_file(self, current_ui_settings):
-        with open(self.filename, "w", encoding="utf8") as file:
-            json.dump(current_ui_settings, file, indent=4, ensure_ascii=False)
+        from modules.atomic_file import atomic_write_json
+
+        atomic_write_json(self.filename, current_ui_settings)
 
     def dump_defaults(self):
         """saves default values to a file unless the file is present and there was an error loading default values at start"""
