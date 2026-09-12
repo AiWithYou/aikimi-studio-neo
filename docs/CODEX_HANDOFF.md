@@ -1,64 +1,52 @@
 # Codexへの引き継ぎ：生成ジョブの安全性
 
-対象：`AiWithYou/aikimi-studio-neo`、`neo`。最新のブランチと差分を読み、既存の変更を上書きしないこと。
-目的は、生成の競合・孤立ジョブ・入力消失をなくすこと。UI、画質設定、保存形式は原則維持する。
+更新: 2026-09-12。対象: `AiWithYou/aikimi-studio-neo` の `neo`。
 
-## このコミットで実施済み
+`bb1a2c97` までfast-forwardしてから実装した。開始時の背景除去関連・H3 CSSなど11ファイルの既存差分は保持している。
 
-- SenseNovaの停止後、stdoutのclose失敗でも稼働中登録と一時入力を後始末する。
-- 停止未確認のworkerは登録・入力を保持し、二重起動を拒否する。
-- 後始末失敗後の再キャンセル、またはworker終了後の次回生成で回復する。
-- 合成トークンのGitleaks除外を、初版コミットの該当ファイル・行のみに合わせた。監査ルールは緩めていない。
-- `tools/tests/test_sensenova_worker_cleanup.py`：4ケース。旧実装は3ケース不合格、修正後は4ケース合格。
-- Linux / Python 3.13で実CPU子プロセスの起動→キャンセル→終了→一時入力削除も確認済み。
+## 実装済み
 
-ソースと直接依存2ファイルはGitHubのblob SHAと照合した。ただし実行環境には完全なcheckout、GPU、Windows、実ComfyUIがなく、全体CIと実モデル生成は未実施。
+- Forge UI/API、SenseNova、H3のGPU所有権を共通のqueue_lockに統一した。`/sdapi/v1/unload-checkpoint` もこの排他を通る。
+- SenseNovaはモデル退避前に所有権を取得する。停止未確認時は入力・worker登録・GPU所有権を保持し、再停止または自然終了後に回収する。待機中のキャンセルは生成ロックを取らない。
+- H3は送信前にUUID・コピー済み素材・送信先process情報を永続化する。応答消失時は同じIDを照会し、再送しない。アプリ再起動後も、最初のGPU処理より先に未確定ジョブの所有権を復元する。
+- H3のキャンセル意図と受付確認を区別した。意図だけの404やgenerator終了では入力を削除せず、所有権も返却しない。
+- SenseNovaの依存監査を独立したCI jobに追加した。Windows CIに今回の回帰テストを追加した。CPU suiteの記録先は一時ディレクトリに隔離し、利用者の実ジョブに触れない。
 
-まず既存環境で次を実行する。新規環境なら既存セットアップ手順を使うこと。
+詳細なAPI契約と監査結果: [generation-job-safety.md](generation-job-safety.md)。
 
-```sh
-python tools/run_ci_tests.py --pattern test_sensenova_worker_cleanup.py --verbosity 2
+## 確認結果
+
+| 検証 | 結果 |
+| --- | --- |
+| CPU suite | 1,373件、失敗0件。skip 43、expected failure 1 |
+| Windows向け選択テスト | `--preload modules.shared` 付きで44件合格 |
+| Windowsの実CPU子process | 参照画像を開いたまま待機するworkerをキャンセルし、終了・入力削除・次回受付を確認 |
+| Windows / RTX 3090 / SenseNova | Forge APIからの切替待機、512×512の実モデルキャンセル、次回生成成功、待機していたForge API生成成功 |
+| 固定版ComfyUIの実HTTP | `efa6c8f8` を起動。正常完了・受付後の応答消失とアプリ再起動・実行中キャンセルが成功。投入は各1回、実行中の素材を保持し、終了後に回収 |
+| Windows / RTX 3090 / H3実モデル | Forge APIからの切替待機、608×352・124フレーム・約5.17秒・ステレオ音声付きMP4の保存、待機していたForge API生成成功。省RAM・1ステップ |
+| Ruff | 新規ファイルに指摘なし。変更した既存ファイルの指摘は増加なし |
+| workflow / 文書 | actionlintと日本語文体検査が合格 |
+
+実GPUの比較は速度や画質の評価ではない。通常UI入口の排他はCPUテスト、実モデルの往復切替は通常生成APIで確認した。
+
+## セキュリティ検出
+
+Gitleaksの合成検出コントロールは成功し、完全なGit履歴の走査で秘密値の検出は0件だった。`.gitleaksignore` は変更していない。
+
+pip-auditは失敗を維持している。本体ではAccelerate・diskcache・setuptools、独立SenseNova環境ではAccelerate・Transformers・setuptoolsを検出した。既存の検出を無効化せず、依存バージョンも変更していない。CUDAローカル版のtorch・torchvisionはPyPI照合の対象外として報告された。
+
+## 実行コマンドと記録
+
+```powershell
+venv/Scripts/python.exe tools/run_ci_tests.py --verbosity 1
+venv/Scripts/python.exe tools/run_ci_tests.py --preload modules.shared --module tools.tests.test_ci_workflow_boundaries --module tools.tests.test_gpu_ownership --module tools.tests.test_minimax_h3_submission --module tools.tests.test_sensenova_worker_cleanup --module tools.tests.test_sensenova_u15_bridge --module tools.tests.test_run_ci_tests
+uv tool run --python 3.13 pip-audit --path models/SenseNova-U1/worker-env/Lib/site-packages
 ```
 
-## 1. 最優先：Forge / SenseNova / H3のGPU所有権
+このcheckoutの実検証スクリプト・結果・ログは `tmp/job-safety-validation/` に保持している。最終記録は `cpu-suite-isolated-final.log`、`windows-selected.log`、`gpu-report.json`、`h3-gpu-report-verified.json`、`contract-verified/report.json`。`verify_gpu.py` がForge/SenseNova、`verify_h3_gpu.py` がForge/H3、`verify_contract.py` が固定版ComfyUIのHTTP契約を検証する。日本語を標準出力へ出す実検証スクリプトは `python -X utf8` で実行する。
 
-`modules/call_queue.py`、通常のUI/API生成経路、`modules_forge/sensenova_u15_bridge.py`、`modules_forge/minimax_h3_bridge.py`を調べる。
-SenseNovaの`_release_forge_vram()`が通常生成の`queue_lock`を共有していない問題を直す。
+## 未実施
 
-既存ロックを再利用・整理できるならそれを優先する。Gradioの`concurrency_id`を揃えるだけではAPIや別processの寿命を保護できない。
-実際のGPU利用期間を同じ排他規則に通し、モデル退避もその範囲で行う。H3のジョブがサーバーで動いている間、HTTP呼出しの終了やUI切断だけで所有権を解放しない。
-待機中のキャンセルは生成用ロック待ちに巻き込まず、worker停止未確認時には別バックエンドも開始させない。
-
-必要な確認は以下に絞る。
-
-- 実GPUで通常生成中にSenseNova/H3を要求し、途中のunload・二重実行がなく、先行ジョブ完了後に次へ進む。逆方向とAPI入口も確認する。
-- 生成キャンセル後に次の生成が成功する。停止失敗時は二重実行せず、再停止で回復する。
-- Windowsで今回のSenseNova変更を確認する。キャンセル後にworkerが終了し、参照画像のファイルハンドルが解放され、次の生成が通ること。
-
-## 2. 最優先：H3の送信結果不明と入力の寿命
-
-`ComfyH3Client.submit()`と呼出し元の`prompt_id`、`cleanup_prepared_media()`、遅延後始末を調べる。
-現状はサーバー受付後に応答だけ失うと、呼出し元のIDが空のままになり、入力を早期削除し得る。
-
-実際に固定しているComfyUIのコードで、クライアント指定ID・キュー/履歴照会・キャンセルの契約を確認してから変更する。
-ジョブIDと素材の所有情報を送信前に保持する。通信結果不明は未送信と区別し、照合できるまで入力を保護する。
-照会可能なIDを持ち、別IDで無条件に再送しない。必要最小限の永続記録で再起動後も照合できるようにする。
-サーバーがIDを受理しない場合、対応済みと見せかけずサーバー側との契約を先に整える。
-
-必須確認は「正常完了」「受付済みだが応答消失」「照合中のアプリ再起動」の3経路。
-実ComfyUIまたは固定版を起動した統合環境で、重複投入なし・実行中の素材削除なし・完了/停止確認後の回収を確かめる。
-GPU不要の通信部分はローカルサーバーで検証し、実モデルによる最短の生成を最後に1回通す。
-
-## 3. セキュリティCI
-
-Gitleaksを完全な履歴で再実行する。除外は合成fixtureに限定し、テストディレクトリ全体を除外しない。
-本体だけでなく`tools/requirements-sensenova.txt`の独立環境も監査対象にする。
-Accelerate 1.14.0に対する既存監査の検出は、最新版の一次情報と実際のモデル読込み経路で再評価する。
-誤検知扱い・無条件のignore・根拠のないバージョン更新はしない。依存を変更した場合はモデルロードから1回の生成まで確認する。
-
-## 実装範囲と完了報告
-
-機能ごとにコミットし、最後に既存のCPU suiteを実行する。UI全面移植、巨大ファイルの見た目だけの分割、万能設定/ジョブ基盤、無関係な整形は行わない。
-テストは上記の実害を防ぐものに絞る。細かい例外の全組合せ、私有関数の全網羅、スクリーンショット総当たりは不要。
-モデルの新規ダウンロードや有料GPU利用が必要なら、既存環境を確認してから判断する。利用可能な環境がなければ、未検証箇所を明記して止め、検証済みと書かない。
-最後に変更点、コミットSHA、実行したコマンドと結果、未実施項目だけを報告する。
+- GitHubへのpushとリモートCI。
+- ブラウザーでの手操作による確認。
+- 全品質・全高速化設定の実GPU検証。今回のH3実GPU検証は省RAM設定を対象とする。
